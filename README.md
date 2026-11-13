@@ -2,6 +2,8 @@
 
 Lyrebird 是一款原生 macOS Apple Music 录音工具。它通过 Core Audio Process Tap 获取 Apple Music 解码后的音频，自动识别当前歌曲、按曲目分轨，并将音频、封面和歌曲元数据保存为独立文件。
 
+![Lyrebird 主界面](docs/images/lyrebird-main-window.png)
+
 ## 主要功能
 
 - 自动识别歌曲名、歌手、专辑和封面。
