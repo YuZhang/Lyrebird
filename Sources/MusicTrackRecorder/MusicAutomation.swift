@@ -22,6 +22,17 @@ struct MusicPlayerSnapshot: Equatable {
         position: 0,
         sampleRate: 0
     )
+
+    func withArtwork(_ artworkData: Data?) -> MusicPlayerSnapshot {
+        MusicPlayerSnapshot(
+            state: state,
+            trackID: trackID,
+            track: track?.withArtwork(artworkData),
+            duration: duration,
+            position: position,
+            sampleRate: sampleRate
+        )
+    }
 }
 
 final class MusicAutomation {

@@ -92,8 +92,8 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
-    private let engine = AudioCaptureEngine()
-    private let musicAutomation = MusicAutomation()
+    private let engine: any AudioCaptureControlling
+    private let musicAutomation: any MusicAutomationControlling
     private let musicLibrary = MusicLibrary()
     private var monitorTask: Task<Void, Never>?
     private var elapsedTimer: Timer?
@@ -103,7 +103,12 @@ final class RecorderViewModel: ObservableObject {
     private var isRefreshingNowPlaying = false
     private var lastNowPlayingRefresh = Date.distantPast
 
-    init() {
+    init(
+        engine: any AudioCaptureControlling = AudioCaptureEngine(),
+        musicAutomation: any MusicAutomationControlling = MusicAutomation()
+    ) {
+        self.engine = engine
+        self.musicAutomation = musicAutomation
         if let savedPath = UserDefaults.standard.string(forKey: "outputDirectoryPath") {
             outputDirectory = URL(fileURLWithPath: savedPath)
         } else {
@@ -402,200 +407,92 @@ final class RecorderViewModel: ObservableObject {
 
     private func startMusicMonitoring() {
         monitorTask = Task { @MainActor [weak self] in
-            await self?.monitorMusic()
+            await self?.monitorMusicWithSession()
         }
     }
 
-    private func monitorMusic() async {
-        var observedTrackID: String?
-        var writingTrackID: String?
-        var writingTrack: TrackMetadata?
-        var writingSampleRate = 0
-        var restartedForHigherRateTrackID: String?
-        var awaitingRestartTrackID: String?
-        var pausedTrackID: String?
-        var skippedTrackID: String?
-        var previousPosition: Double?
-        var previousDuration = 0.0
+    private func monitorMusicWithSession() async {
+        var session = RecordingSession()
 
         while !Task.isCancelled && isRecording {
             do {
-                let snapshot = try await musicAutomation.snapshot()
+                var snapshot = try await musicAutomation.snapshot()
                 guard !Task.isCancelled, isRecording else { return }
                 currentTrack = snapshot.track
                 detectedPosition = snapshot.position
                 detectedDuration = snapshot.duration
 
                 if snapshot.state == .playing, let track = snapshot.track {
-                    let trackChanged = snapshot.trackID != observedTrackID
-                    let trackRestarted = awaitingRestartTrackID == snapshot.trackID || (!trackChanged
-                        && previousPosition != nil
-                        && snapshot.position < previousPosition! - 1.5)
+                    detectedTrack = track.displayText
+                    let trackChanged = snapshot.trackID != session.observedTrackID
+                    let awaitingRestart = session.awaitingRestartTrackID == snapshot.trackID
+                    let positionRestarted = session.previousPosition != nil
+                        && snapshot.position < session.previousPosition! - 1.5
+                    let needsPreparation = trackChanged || awaitingRestart || positionRestarted
+                    var isDuplicate = false
 
-                    if trackChanged || trackRestarted {
-                        awaitingRestartTrackID = nil
-                        let previousWasComplete = RecordingCompleteness.completedBeforeChange(
-                            duration: previousDuration,
-                            position: previousPosition
-                        )
-                        if writingTrackID != nil {
-                            await engine.finishTrack(completed: previousWasComplete)
-                            if previousWasComplete, let writingTrack {
-                                await musicLibrary.register(writingTrack)
-                            }
-                            writingTrackID = nil
-                            writingTrack = nil
-                            writingSampleRate = 0
-                        }
-
-                        let firstObservation = observedTrackID == nil
-                        observedTrackID = snapshot.trackID
-                        skippedTrackID = nil
-                        detectedTrack = track.displayText
+                    if needsPreparation {
                         if let artworkSnapshot = try? await musicAutomation.snapshot(includeArtwork: true),
                            artworkSnapshot.trackID == snapshot.trackID {
                             detectedArtworkData = artworkSnapshot.track?.artworkData
+                            snapshot = snapshot.withArtwork(detectedArtworkData)
                         }
-
                         await musicLibrary.refreshIfNeeded(in: outputDirectory)
-                        if await musicLibrary.contains(track) {
-                            skippedTrackID = snapshot.trackID
-                            appendLog(.info, "歌曲已存在，已跳过：\(track.displayText)")
-                            currentFileName = "文件夹中已有此歌曲，未重复录制"
-                            status = "歌曲已存在，已跳过"
-                        } else if firstObservation && !trackRestarted && !RecordingCompleteness.canStart(at: recordingStartPosition) {
-                            currentFileName = "当前歌曲未从头录制"
-                            status = "等待下一首自动开始…"
-                        } else {
-                            let sampleRate = snapshot.sampleRate > 0
-                                ? snapshot.sampleRate
-                                : try await waitForSampleRate(trackID: snapshot.trackID)
-                            if sampleRate == 0 {
-                                appendLog(.warning, "无法确认采样率，未录制：\(track.displayText)")
-                                currentFileName = "采样率未知，未录制"
-                                status = "等待下一首自动开始…"
-                            } else {
-                                let detailed = try await musicAutomation.snapshot()
-                                if detailed.trackID == snapshot.trackID,
-                                   detailed.state == .playing,
-                                   let detailedTrack = detailed.track?.withArtwork(detectedArtworkData) {
-                                    if RecordingCompleteness.canStart(at: detailed.position) {
-                                        detectedArtworkData = detailedTrack.artworkData
-                                        currentFileName = "等待 Apple Music 音频…"
-                                        await engine.updateSampleRate(sampleRate)
-                                        await engine.beginTrack(title: detailedTrack.fileTitle, metadata: detailedTrack)
-                                        writingTrackID = snapshot.trackID
-                                        writingTrack = detailedTrack
-                                        writingSampleRate = sampleRate
-                                        status = "正在自动录音"
-                                    } else if restartedForHigherRateTrackID != snapshot.trackID {
-                                        restartedForHigherRateTrackID = snapshot.trackID
-                                        try await musicAutomation.restartCurrentTrack()
-                                        awaitingRestartTrackID = snapshot.trackID
-                                        appendLog(.info, "采样率确认为 \(sampleRate) Hz，从头开始录制")
-                                        currentFileName = "采样率已确认，从头开始录制"
-                                        status = "正在从头录制…"
-                                        previousPosition = detailed.position
-                                        previousDuration = detailed.duration
-                                        continue
-                                    } else {
-                                        currentFileName = "采样率确认过晚，当前歌曲未录制"
-                                        status = "等待下一首自动开始…"
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        detectedTrack = track.displayText
-                        if pausedTrackID == snapshot.trackID {
-                            await engine.resumeTrack()
-                            pausedTrackID = nil
-                            currentFileName = writingTrack?.fileTitle ?? currentFileName
-                            status = "正在自动录音"
-                            appendLog(.info, "恢复播放，继续录制：\(track.displayText)")
-                        }
-                        if restartsForHigherSampleRate,
-                           writingTrackID == snapshot.trackID,
-                           restartedForHigherRateTrackID != snapshot.trackID,
-                           writingSampleRate > 0,
-                           snapshot.sampleRate > writingSampleRate {
-                            try await musicAutomation.restartCurrentTrack()
-                            restartedForHigherRateTrackID = snapshot.trackID
-                            awaitingRestartTrackID = snapshot.trackID
-                            await engine.finishTrack(completed: false)
-                            writingTrackID = nil
-                            writingTrack = nil
-                            appendLog(.info, "检测到采样率提升（\(writingSampleRate) Hz → \(snapshot.sampleRate) Hz），从头重录")
-                            writingSampleRate = 0
-                            currentFileName = "高解析版本已就绪，从头重录"
-                            status = "正在从头重录高解析版本…"
-                            previousPosition = snapshot.position
-                            previousDuration = snapshot.duration
-                            continue
-                        }
-                        if writingTrackID == nil {
-                            if skippedTrackID == snapshot.trackID {
-                                currentFileName = "文件夹中已有此歌曲，未重复录制"
-                                status = "歌曲已存在，已跳过"
-                            } else {
-                                currentFileName = "等待下一首歌曲"
-                                status = "等待下一首自动开始…"
-                            }
+                        isDuplicate = await musicLibrary.contains(track)
+                    }
+
+                    let rejectsMidTrack = session.observedTrackID == nil
+                        && !awaitingRestart
+                        && !positionRestarted
+                        && !RecordingCompleteness.canStart(at: recordingStartPosition)
+                    if needsPreparation && !isDuplicate && !rejectsMidTrack && snapshot.sampleRate <= 0 {
+                        let sampleRate = try await waitForSampleRate(trackID: snapshot.trackID)
+                        if sampleRate > 0 {
+                            let latest = try await musicAutomation.snapshot()
+                            snapshot = MusicPlayerSnapshot(
+                                state: latest.state,
+                                trackID: latest.trackID,
+                                track: latest.track?.withArtwork(snapshot.track?.artworkData),
+                                duration: latest.duration,
+                                position: latest.position,
+                                sampleRate: latest.sampleRate > 0 ? latest.sampleRate : sampleRate
+                            )
+                            currentTrack = snapshot.track
+                            detectedPosition = snapshot.position
+                            detectedDuration = snapshot.duration
                         }
                     }
 
-                    if writingTrackID == snapshot.trackID,
-                       RecordingCompleteness.reachedEnd(
-                        duration: snapshot.duration,
-                        position: snapshot.position
-                       ) {
-                        await engine.finishTrack(completed: true)
-                        if let writingTrack {
-                            await musicLibrary.register(writingTrack)
-                        }
-                        writingTrackID = nil
-                        writingTrack = nil
-                        writingSampleRate = 0
-                        currentFileName = "完整音轨已保存"
-                        status = "等待下一首自动开始…"
+                    let actions = session.process(
+                        snapshot: snapshot,
+                        isDuplicate: isDuplicate,
+                        recordingStartPosition: recordingStartPosition,
+                        restartsForHigherSampleRate: restartsForHigherSampleRate
+                    )
+                    for action in actions {
+                        try await perform(action)
                     }
-                    previousPosition = snapshot.position
-                    previousDuration = snapshot.duration
+                    currentTrack = snapshot.track
+                    currentFileName = session.currentFileName
+                    status = session.status
                 } else {
-                    previousPosition = nil
-                    previousDuration = 0
-
-                    if snapshot.state == .paused {
-                        if writingTrackID != nil && writingTrackID != snapshot.trackID {
-                            await engine.finishTrack(completed: false)
-                            writingTrackID = nil
-                            writingTrack = nil
-                            writingSampleRate = 0
-                            pausedTrackID = nil
-                        }
-                        if writingTrackID != nil {
-                            await engine.pauseTrack()
-                            pausedTrackID = writingTrackID
-                        }
-                        detectedTrack = snapshot.track?.displayText ?? "播放已暂停"
-                        currentFileName = pausedTrackID == snapshot.trackID ? "已暂停，恢复后继续" : "暂停期间不写入音频"
-                        status = "播放已暂停"
-                    } else {
-                        let discardedIncompleteFile = writingTrackID != nil
-                        if writingTrackID != nil {
-                            await engine.finishTrack(completed: false)
-                            writingTrackID = nil
-                            writingTrack = nil
-                            writingSampleRate = 0
-                        }
-                        pausedTrackID = nil
-                        observedTrackID = nil
-                        skippedTrackID = nil
-                        detectedTrack = "Apple Music 已停止播放"
-                        detectedArtworkData = nil
-                        currentFileName = discardedIncompleteFile ? "录音不完整，已丢弃" : "等待歌曲开始"
-                        status = "等待 Apple Music 播放…"
+                    let actions = session.process(
+                        snapshot: snapshot,
+                        isDuplicate: false,
+                        recordingStartPosition: recordingStartPosition,
+                        restartsForHigherSampleRate: restartsForHigherSampleRate
+                    )
+                    for action in actions {
+                        try await perform(action)
                     }
+                    detectedTrack = snapshot.state == .stopped
+                        ? "Apple Music 已停止播放"
+                        : snapshot.track?.displayText ?? "播放已暂停"
+                    if snapshot.state == .stopped {
+                        detectedArtworkData = nil
+                    }
+                    currentFileName = session.currentFileName
+                    status = session.status
                 }
             } catch let error as MusicAutomationError {
                 if case .automationPermission = error {
@@ -610,6 +507,27 @@ final class RecorderViewModel: ObservableObject {
             }
 
             try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    private func perform(_ action: RecordingSessionAction) async throws {
+        switch action {
+        case .begin(let metadata, let sampleRate):
+            await engine.updateSampleRate(sampleRate)
+            await engine.beginTrack(title: metadata.fileTitle, metadata: metadata)
+        case .finish(let completed, let register):
+            await engine.finishTrack(completed: completed)
+            if let register {
+                await musicLibrary.register(register)
+            }
+        case .pause:
+            await engine.pauseTrack()
+        case .resume:
+            await engine.resumeTrack()
+        case .restart:
+            try await musicAutomation.restartCurrentTrack()
+        case .log(let message):
+            appendLog(.info, message)
         }
     }
 

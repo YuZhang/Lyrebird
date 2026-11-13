@@ -43,7 +43,6 @@ final class StatusBarController: NSObject {
         statusItem.button?.image = image
         statusItem.button?.needsDisplay = true
         statusItem.button?.toolTip = model.isRecording ? "Lyrebird 录制中" : "Lyrebird 未录制"
-        NSLog("Lyrebird bird frame: \(frame), recording: \(model.isRecording), loaded: \(image != nil)")
     }
 
     @objc private func handleClick() {
