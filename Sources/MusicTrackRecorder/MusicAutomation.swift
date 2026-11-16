@@ -23,6 +23,17 @@ struct MusicPlayerSnapshot: Equatable {
         sampleRate: 0
     )
 
+    func withTrack(_ track: TrackMetadata?) -> MusicPlayerSnapshot {
+        MusicPlayerSnapshot(
+            state: state,
+            trackID: trackID,
+            track: track,
+            duration: duration,
+            position: position,
+            sampleRate: sampleRate
+        )
+    }
+
     func withArtwork(_ artworkData: Data?) -> MusicPlayerSnapshot {
         MusicPlayerSnapshot(
             state: state,
@@ -84,7 +95,7 @@ final class MusicAutomation {
                 let result = script?.executeAndReturnError(&errorInfo)
                 if let errorInfo {
                     let number = (errorInfo[NSAppleScript.errorNumber] as? NSNumber)?.intValue ?? 0
-                    let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "无法从头播放当前歌曲。"
+                    let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Could not play the current track from the beginning."
                     if number == -1743 {
                         continuation.resume(throwing: MusicAutomationError.automationPermission)
                     } else {
@@ -95,7 +106,7 @@ final class MusicAutomation {
                     let after = result?.atIndex(2)?.doubleValue ?? -1
                     NSLog("Apple Music restart position: \(before) -> \(after)")
                     if after < 0 || after > 2 {
-                        continuation.resume(throwing: MusicAutomationError.readFailed("Apple Music 未能回到歌曲开头。"))
+                        continuation.resume(throwing: MusicAutomationError.readFailed("Apple Music could not return to the beginning of the track."))
                     } else {
                         continuation.resume()
                     }
@@ -113,7 +124,7 @@ final class MusicAutomation {
 
         if let errorInfo {
             let number = (errorInfo[NSAppleScript.errorNumber] as? NSNumber)?.intValue ?? 0
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "无法读取 Apple Music 播放状态。"
+            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Could not read Apple Music playback status."
             if number == -1743 {
                 throw MusicAutomationError.automationPermission
             }
@@ -139,7 +150,7 @@ final class MusicAutomation {
             ? "\(title)|\(artist)|\(album)|\(duration)"
             : persistentID
         let track = TrackMetadata(
-            title: title.isEmpty ? "未知歌曲" : title,
+            title: title.isEmpty ? "Unknown Track" : title,
             artist: artist,
             albumArtist: string(at: 5, in: result),
             album: album,
@@ -214,9 +225,9 @@ enum MusicAutomationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .automationPermission:
-            return "需要“自动化”权限才能读取 Apple Music 歌曲信息。请在系统设置的“隐私与安全性 → 自动化”中允许本应用控制“音乐”，然后重新开始录音。"
+            return "Automation permission is required to read Apple Music track information. In System Settings → Privacy & Security → Automation, allow Lyrebird to control Music, then start recording again."
         case .invalidResponse:
-            return "Apple Music 返回了无法识别的播放信息。"
+            return "Apple Music returned unrecognized playback information."
         case .readFailed(let message):
             return message
         }

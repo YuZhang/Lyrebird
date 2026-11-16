@@ -6,15 +6,17 @@ struct RecordingQuality: Equatable {
     var droppedBuffers = 0
     var maximumBufferedBuffers = 0
     var writtenFrames: Int64 = 0
+    var metadataWarnings: [String] = []
 
     var hasIssues: Bool {
         droppedFrames > 0 || droppedBuffers > 0
     }
 
     var summary: String {
-        hasIssues
-            ? "检测到 \(droppedBuffers) 个音频包、\(droppedFrames) 帧被丢弃"
-            : "未检测到因写入拥塞造成的丢帧"
+        guard hasIssues else { return "No dropped frames caused by write congestion" }
+        let bufferUnit = droppedBuffers == 1 ? "buffer" : "buffers"
+        let frameUnit = droppedFrames == 1 ? "frame" : "frames"
+        return "Dropped \(droppedBuffers) audio \(bufferUnit) and \(droppedFrames) \(frameUnit)"
     }
 }
 
@@ -34,7 +36,7 @@ enum RecordingQualityReport {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let fileSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
 
-        var codec = "未知"
+        var codec = "Unknown"
         var sampleRate = 0.0
         var channels = 0
         if let track = tracks.first {

@@ -17,7 +17,7 @@ final class PauseResumeProbe {
             defer { try? controlMusic("pause") }
             try await engine.start(
                 outputDirectory: outputDirectory,
-                title: "暂停恢复测试",
+                title: "Pause Resume Test",
                 automatic: false,
                 format: .alac
             )
@@ -31,13 +31,16 @@ final class PauseResumeProbe {
             await engine.stop()
             try await Task.sleep(nanoseconds: 100_000_000)
 
-            guard let finishedURL else { return "暂停恢复测试失败：未生成文件" }
+            guard let finishedURL else { return "Pause/resume test failed: no file generated" }
             let duration = AVAsset(url: finishedURL).duration.seconds
-            let passed = fileCount == 1 && duration >= 1.2 && duration <= 2.8
-            return "流程：录制 1 秒 → 暂停 1 秒 → 续录 1 秒\n文件数量：\(fileCount)\n文件时长：\(String(format: "%.3f", duration)) 秒\n暂停恢复验证：\(passed ? "通过" : "失败")\n文件路径：\(finishedURL.path)"
+            let temporaryExists = FileManager.default.fileExists(
+                atPath: TrackFileNaming.temporaryURL(for: finishedURL).path
+            )
+            let passed = fileCount == 1 && duration >= 1.2 && duration <= 2.8 && !temporaryExists
+            return "Flow: record 1 second → pause 1 second → resume 1 second\nFile count: \(fileCount)\nFile duration: \(String(format: "%.3f", duration)) seconds\nTemporary file remains: \(temporaryExists ? "Yes" : "No")\nPause/resume validation: \(passed ? "Passed" : "Failed")\nFile path: \(finishedURL.path)"
         } catch {
             await engine.stop()
-            return "暂停恢复测试失败：\(error.localizedDescription)"
+            return "Pause/resume test failed: \(error.localizedDescription)"
         }
     }
 
@@ -46,7 +49,7 @@ final class PauseResumeProbe {
         let script = NSAppleScript(source: "tell application \"Music\" to \(command)")
         _ = script?.executeAndReturnError(&errorInfo)
         if let errorInfo {
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "无法控制 Apple Music。"
+            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Could not control Apple Music."
             throw MusicAutomationError.readFailed(message)
         }
     }

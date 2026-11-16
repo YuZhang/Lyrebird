@@ -31,6 +31,26 @@ final class TrackMetadataTests: XCTestCase {
         XCTAssertEqual(updated.artworkData, data)
     }
 
+    func testReadbackMismatchesIdentifyMissingFields() {
+        let incomplete = TrackMetadata(
+            title: metadata.title,
+            artist: metadata.artist,
+            albumArtist: metadata.albumArtist,
+            album: metadata.album,
+            genre: metadata.genre,
+            composer: metadata.composer,
+            year: 0,
+            trackNumber: 0,
+            discNumber: 0
+        )
+        XCTAssertEqual(
+            metadata.readbackMismatches(comparedTo: incomplete),
+            ["Year", "Track number", "Disc number"]
+        )
+        XCTAssertTrue(metadata.readbackMismatches(comparedTo: metadata).isEmpty)
+        XCTAssertEqual(metadata.readbackMismatches(comparedTo: nil), ["All track metadata"])
+    }
+
     func testMetadataItemsContainSongInformation() {
         let items = metadata.avMetadataItems
         XCTAssertEqual(items.count, 10)
@@ -41,7 +61,8 @@ final class TrackMetadataTests: XCTestCase {
         XCTAssertEqual(value(for: AVMetadataKey.commonKeyArtist.rawValue, in: items), "测试艺人")
         XCTAssertEqual(value(for: AVMetadataKey.commonKeyAlbumName.rawValue, in: items), "测试专辑")
         XCTAssertEqual(value(for: AVMetadataKey.iTunesMetadataKeyComposer.rawValue, in: items), "测试作曲者")
-        XCTAssertEqual(value(for: AVMetadataKey.iTunesMetadataKeyTrackNumber.rawValue, in: items), "3")
+        XCTAssertEqual(dataValue(for: AVMetadataKey.iTunesMetadataKeyTrackNumber.rawValue, in: items), Data([0, 0, 0, 3, 0, 0, 0, 0]))
+        XCTAssertEqual(dataValue(for: AVMetadataKey.iTunesMetadataKeyDiscNumber.rawValue, in: items), Data([0, 0, 0, 1, 0, 0]))
         XCTAssertEqual(value(for: AVMetadataKey.iTunesMetadataKeyReleaseDate.rawValue, in: items), "2026")
     }
 
@@ -67,5 +88,12 @@ final class TrackMetadataTests: XCTestCase {
 
     private func value(for key: String, in items: [AVMetadataItem]) -> String? {
         items.first { ($0.key as? NSString) == key as NSString }?.value as? String
+    }
+
+    private func dataValue(for key: String, in items: [AVMetadataItem]) -> Data? {
+        guard let data = items.first(where: { ($0.key as? NSString) == key as NSString })?.value as? NSData else {
+            return nil
+        }
+        return data as Data
     }
 }

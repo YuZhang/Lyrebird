@@ -4,29 +4,34 @@ struct SettingsView: View {
     @EnvironmentObject private var model: RecorderViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var showingDiagnostics = false
+    @State private var previewPlan: LibraryOrganizationPlan?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("设置")
+                Text("Settings")
                     .font(.title3.bold())
                 Spacer()
-                Button("完成") { dismiss() }
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(LyrebirdTheme.accent)
+                    .controlSize(.small)
             }
 
-            VStack(alignment: .leading, spacing: 16) {
-                LabeledContent("录制模式") {
+            VStack(alignment: .leading, spacing: 10) {
+                LabeledContent("Recording Mode") {
                     Picker("", selection: $model.automaticMode) {
-                        Text("自动分轨").tag(true)
-                        Text("手动").tag(false)
+                        Text("Automatic Split").tag(true)
+                        Text("Manual").tag(false)
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: 210)
+                    .tint(LyrebirdTheme.accent)
                 }
                 .disabled(model.isRecording || model.isBusy)
 
-                LabeledContent("编码格式") {
+                LabeledContent("Encoding") {
                     Picker("", selection: $model.recordingFormat) {
                         Text("ALAC · 24-bit").tag(AudioRecordingFormat.alac)
                         Text("AAC · 256 kbps").tag(AudioRecordingFormat.aac)
@@ -34,13 +39,19 @@ struct SettingsView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(width: 260)
+                    .tint(LyrebirdTheme.accent)
                 }
                 .disabled(model.isRecording || model.isBusy)
 
-                Toggle("高解析就绪后从头重录", isOn: $model.restartsForHigherSampleRate)
+                Toggle("Restart from Beginning for Hi-Res Audio", isOn: $model.restartsForHigherSampleRate)
+                    .tint(LyrebirdTheme.accent)
                     .disabled(model.isRecording || model.isBusy)
+            }
+            .padding(12)
+            .background(LyrebirdTheme.card, in: RoundedRectangle(cornerRadius: 10))
 
-                LabeledContent("保存目录") {
+            VStack(alignment: .leading, spacing: 10) {
+                LabeledContent("Save Folder") {
                     HStack(spacing: 8) {
                         Text(model.outputDirectory.path)
                             .font(.caption)
@@ -49,26 +60,55 @@ struct SettingsView: View {
                             .truncationMode(.middle)
                             .frame(maxWidth: 240, alignment: .leading)
                             .textSelection(.enabled)
-                        Button("更改…") { model.chooseOutputDirectory() }
+                        Button("Change…") { model.chooseOutputDirectory() }
                             .disabled(model.isRecording || model.isBusy)
-                        Button("打开") { model.openOutputDirectory() }
+                        Button("Open") { model.openOutputDirectory() }
+                    }
+                }
+
+                LabeledContent("Music Files") {
+                    HStack(spacing: 10) {
+                        Button("Organize Songs…") {
+                            Task { previewPlan = await model.prepareOrganizationPreview() }
+                        }
+                        .disabled(model.isRecording || model.isBusy)
+                        if model.canUndoOrganization {
+                            Button("Undo Organization") {
+                                Task { await model.undoOrganization() }
+                            }
+                            .disabled(model.isRecording || model.isBusy)
+                            .help("Restore files moved by the most recent organization")
+                        }
+                        if !model.organizationStatus.isEmpty {
+                            Text(model.organizationStatus)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .frame(maxWidth: 180, alignment: .leading)
+                        }
                     }
                 }
             }
-
-            Divider()
+            .padding(12)
+            .background(LyrebirdTheme.card, in: RoundedRectangle(cornerRadius: 10))
 
             HStack {
-                Button("音频／录屏权限") { model.openPermissionSettings() }
-                Button("自动化权限") { model.openAutomationSettings() }
+                Button("Audio & Screen Recording") { model.openPermissionSettings() }
+                Button("Automation") { model.openAutomationSettings() }
                 Spacer()
-                Button("采集诊断") { showingDiagnostics = true }
+                Button("Capture Diagnostics") { showingDiagnostics = true }
+                    .tint(LyrebirdTheme.accent)
             }
         }
-        .padding(20)
-        .frame(width: 540, height: 292)
+        .padding(16)
+        .frame(width: 540, height: 330)
+        .background(LyrebirdTheme.canvas)
         .sheet(isPresented: $showingDiagnostics) {
             DiagnosticView(outputDirectory: model.outputDirectory)
+        }
+        .sheet(item: $previewPlan) { plan in
+            OrganizationPreviewView(plan: plan)
+                .environmentObject(model)
         }
     }
 }

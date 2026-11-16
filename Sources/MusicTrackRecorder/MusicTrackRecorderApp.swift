@@ -32,6 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let model = Self.viewModel {
             statusBarController = StatusBarController(model: model)
         }
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         let arguments = CommandLine.arguments
 
         if arguments.contains("--run-elapsed-probe") {
@@ -44,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let later = Self.viewModel?.elapsed ?? 0
                 await Self.viewModel?.stop()
                 writeDiagnosticReport(
-                    "开始计时：\(String(format: "%.2f", initial)) 秒\n2.2 秒后：\(String(format: "%.2f", later)) 秒\n计时验证：\(later >= 2 ? "通过" : "失败")",
+                    "Initial timer: \(String(format: "%.2f", initial)) seconds\nAfter 2.2 seconds: \(String(format: "%.2f", later)) seconds\nTimer validation: \(later >= 2 ? "Passed" : "Failed")",
                     arguments: arguments
                 )
             }
@@ -57,12 +70,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .executeAndReturnError(nil)
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 await Self.viewModel?.refreshNowPlaying()
-                let track = Self.viewModel?.detectedTrack ?? "未读取"
+                let track = Self.viewModel?.detectedTrack ?? "Not read"
                 let artworkSize = Self.viewModel?.detectedArtworkData?.count ?? 0
                 _ = NSAppleScript(source: "tell application \"Music\" to pause")?
                     .executeAndReturnError(nil)
                 writeDiagnosticReport(
-                    "当前歌曲：\(track)\n封面数据：\(artworkSize) 字节\n界面封面状态：\(artworkSize > 0 ? "已加载" : "未加载")",
+                    "Current track: \(track)\nArtwork data: \(artworkSize) bytes\nUI artwork state: \(artworkSize > 0 ? "Loaded" : "Not loaded")",
+                    arguments: arguments
+                )
+            }
+            return
+        }
+
+        if arguments.contains("--run-sleep-probe") {
+            Task { @MainActor in
+                guard let model = Self.viewModel else { return }
+                let testDirectory = diagnosticOutputURL(arguments)?.deletingLastPathComponent()
+                    .appendingPathComponent("Sleep Recovery Test", isDirectory: true)
+                    ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Sleep Test", isDirectory: true)
+                try? FileManager.default.removeItem(at: testDirectory)
+                try? FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
+                model.outputDirectory = testDirectory
+                _ = NSAppleScript(source: "tell application \"Music\" to play current track")?
+                    .executeAndReturnError(nil)
+                await model.start()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                NSWorkspace.shared.notificationCenter.post(
+                    name: NSWorkspace.willSleepNotification,
+                    object: nil
+                )
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                let stopped = !model.isRecording && !model.isBusy
+                NSWorkspace.shared.notificationCenter.post(
+                    name: NSWorkspace.didWakeNotification,
+                    object: nil
+                )
+                let files = (try? FileManager.default.contentsOfDirectory(
+                    at: testDirectory,
+                    includingPropertiesForKeys: nil
+                )) ?? []
+                writeDiagnosticReport(
+                    "Stopped after sleep: \(stopped ? "Yes" : "No")\nRemaining audio files: \(files.count)\nSleep recovery validation: \(stopped && files.isEmpty ? "Passed" : "Failed")",
                     arguments: arguments
                 )
             }
@@ -74,13 +122,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let model = Self.viewModel else { return }
                 let originalDirectory = model.outputDirectory
                 let originalMode = model.automaticMode
+                defer {
+                    model.automaticMode = originalMode
+                    model.outputDirectory = originalDirectory
+                    UserDefaults.standard.set(originalDirectory.path, forKey: "outputDirectoryPath")
+                }
                 let testDirectory = diagnosticOutputURL(arguments)?.deletingLastPathComponent()
-                    .appendingPathComponent("自动格式测试", isDirectory: true)
+                    .appendingPathComponent("Automatic Format Test", isDirectory: true)
                     ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Format Test", isDirectory: true)
                 try? FileManager.default.removeItem(at: testDirectory)
                 try? FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
                 model.automaticMode = true
-                model.setOutputDirectory(testDirectory)
+                model.outputDirectory = testDirectory
                 _ = NSAppleScript(source: "tell application \"Music\" to set player position to 0")?
                     .executeAndReturnError(nil)
                 _ = NSAppleScript(source: "tell application \"Music\" to play current track")?
@@ -90,17 +143,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let captureRate = model.captureSampleRate
                 let sourceRate = (try? await MusicAutomation().snapshot().sampleRate) ?? 0
                 let status = model.status
-                let error = model.errorMessage ?? "无"
+                let error = model.errorMessage ?? "None"
                 let position = model.detectedPosition
                 let fileName = model.currentFileName
-                let logs = model.logEvents.prefix(5).map(\.message).joined(separator: "；")
+                let logs = model.logEvents.prefix(5).map(\.message).joined(separator: "; ")
                 await model.stop()
                 _ = NSAppleScript(source: "tell application \"Music\" to pause")?
                     .executeAndReturnError(nil)
-                model.automaticMode = originalMode
-                model.setOutputDirectory(originalDirectory)
                 writeDiagnosticReport(
-                    "源采样率：\(sourceRate) Hz\n界面采集采样率：\(captureRate) Hz\n状态：\(status)\n文件状态：\(fileName)\n播放位置：\(position)\n日志：\(logs)\n错误：\(error)\n自动模式验证：\(sourceRate > 0 && sourceRate == captureRate ? "通过" : "失败")",
+                    "Source sample rate: \(sourceRate) Hz\nUI capture sample rate: \(captureRate) Hz\nStatus: \(status)\nFile status: \(fileName)\nPlayback position: \(position)\nLogs: \(logs)\nError: \(error)\nAutomatic mode validation: \(sourceRate > 0 && sourceRate == captureRate ? "Passed" : "Failed")",
                     arguments: arguments
                 )
             }
@@ -111,13 +162,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let model = Self.viewModel else { return }
                 let originalDirectory = model.outputDirectory
+                defer {
+                    model.outputDirectory = originalDirectory
+                }
                 let testDirectory = diagnosticOutputURL(arguments)?.deletingLastPathComponent()
-                    .appendingPathComponent("目录切换测试", isDirectory: true)
+                    .appendingPathComponent("Directory Switch Test", isDirectory: true)
                     ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Directory Test", isDirectory: true)
                 try? FileManager.default.removeItem(at: testDirectory)
                 try? FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
                 model.automaticMode = false
-                model.setOutputDirectory(testDirectory)
+                model.outputDirectory = testDirectory
                 _ = NSAppleScript(source: "tell application \"Music\" to play current track")?
                     .executeAndReturnError(nil)
                 await model.start()
@@ -129,10 +183,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     at: testDirectory,
                     includingPropertiesForKeys: nil
                 ).filter { $0.pathExtension == "m4a" }) ?? []
-                let savedPath = UserDefaults.standard.string(forKey: "outputDirectoryPath") ?? ""
-                model.setOutputDirectory(originalDirectory)
                 writeDiagnosticReport(
-                    "当前目录：\(testDirectory.path)\n偏好设置：\(savedPath)\n实际写入文件：\(files.count)\n目录切换验证：\(!files.isEmpty && savedPath == testDirectory.path ? "通过" : "失败")",
+                    "Current folder: \(testDirectory.path)\nFiles written: \(files.count)\nDirectory switch validation: \(!files.isEmpty ? "Passed" : "Failed")",
                     arguments: arguments
                 )
             }
@@ -148,8 +200,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await model.start()
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                let waiting = model.isRecording && model.status == "等待 Apple Music 播放…"
-                let waitingError = model.errorMessage ?? "无"
+                let waiting = model.isRecording && model.status == "Waiting for Apple Music…"
+                let waitingError = model.errorMessage ?? "None"
                 _ = NSAppleScript(source: """
                 tell application "Music"
                     if (exists current track) then
@@ -163,12 +215,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 let started = model.isRecording && model.errorMessage == nil
                 let startedStatus = model.status
-                let startedError = model.errorMessage ?? "无"
+                let startedError = model.errorMessage ?? "None"
                 await model.stop()
                 _ = NSAppleScript(source: "tell application \"Music\" to pause")?
                     .executeAndReturnError(nil)
                 writeDiagnosticReport(
-                    "停止播放后点击录制：\(waiting ? "保持等待" : "失败")\n等待期间错误：\(waitingError)\n播放后启动采集：\(started ? "成功" : "失败")\n播放后状态：\(startedStatus)\n启动错误：\(startedError)",
+                    "Record clicked while playback was stopped: \(waiting ? "Kept waiting" : "Failed")\nError while waiting: \(waitingError)\nCapture started after playback: \(started ? "Succeeded" : "Failed")\nStatus after playback: \(startedStatus)\nStartup error: \(startedError)",
                     arguments: arguments
                 )
             }
@@ -180,13 +232,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let model = Self.viewModel else { return }
                 let originalDirectory = model.outputDirectory
                 let originalMode = model.automaticMode
+                defer {
+                    model.automaticMode = originalMode
+                    model.outputDirectory = originalDirectory
+                    UserDefaults.standard.set(originalDirectory.path, forKey: "outputDirectoryPath")
+                }
                 let testDirectory = diagnosticOutputURL(arguments)?.deletingLastPathComponent()
-                    .appendingPathComponent("暂停恢复界面测试", isDirectory: true)
+                    .appendingPathComponent("Pause Resume UI Test", isDirectory: true)
                     ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Pause Test", isDirectory: true)
                 try? FileManager.default.removeItem(at: testDirectory)
                 try? FileManager.default.createDirectory(at: testDirectory, withIntermediateDirectories: true)
                 model.automaticMode = true
-                model.setOutputDirectory(testDirectory)
+                model.outputDirectory = testDirectory
                 _ = NSAppleScript(source: """
                 tell application "Music"
                     set player position to 0
@@ -206,15 +263,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .executeAndReturnError(nil)
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 let resumedStatus = model.status
-                let resumed = model.logEvents.contains { $0.message.contains("恢复播放，继续录制") }
+                let resumed = model.logEvents.contains { $0.message.contains("Playback resumed; continuing recording") }
                 await model.stop()
                 _ = NSAppleScript(source: "tell application \"Music\" to pause")?
                     .executeAndReturnError(nil)
                 model.automaticMode = originalMode
                 model.setOutputDirectory(originalDirectory)
-                let passed = pausedStatus == "播放已暂停" && resumedStatus == "正在自动录音" && resumed
+                let passed = pausedStatus == "Playback Paused" && resumedStatus == "Recording Automatically" && resumed
                 writeDiagnosticReport(
-                    "暂停状态：\(pausedStatus)\n暂停文件状态：\(pausedFile)\n恢复状态：\(resumedStatus)\n继续原文件：\(resumed ? "是" : "否")\n界面流程验证：\(passed ? "通过" : "失败")",
+                    "Paused status: \(pausedStatus)\nPaused file status: \(pausedFile)\nResumed status: \(resumedStatus)\nContinued original file: \(resumed ? "Yes" : "No")\nUI flow validation: \(passed ? "Passed" : "Failed")",
                     arguments: arguments
                 )
             }
@@ -273,14 +330,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     withIntermediateDirectories: true
                 )
                 try report.write(to: url, atomically: true, encoding: .utf8)
-                print("诊断报告已写入：\(url.path)")
+                print("Diagnostic report written: \(url.path)")
             } catch {
-                print("诊断报告写入失败：\(error.localizedDescription)")
+                print("Failed to write diagnostic report: \(error.localizedDescription)")
             }
         } else {
             print(report)
         }
         NSApp.terminate(nil)
+    }
+
+    @objc private func systemWillSleep() {
+        guard let model = Self.viewModel, model.isRecording || model.isBusy else { return }
+        Task { @MainActor in
+            await model.stop()
+        }
+    }
+
+    @objc private func systemDidWake() {
+        Task { @MainActor in
+            await Self.viewModel?.refreshNowPlaying()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

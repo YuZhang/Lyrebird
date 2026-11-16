@@ -69,6 +69,19 @@ final class RecordingSessionTests: XCTestCase {
         })
     }
 
+    func testMusicRestartStartsFreshAfterDiscardingIncompleteFile() {
+        var session = RecordingSession()
+        _ = session.process(snapshot: snapshot(rate: 48_000), isDuplicate: false, recordingStartPosition: 0.1, restartsForHigherSampleRate: false)
+        let stopped = session.process(snapshot: .stopped, isDuplicate: false, recordingStartPosition: 0.1, restartsForHigherSampleRate: false)
+        XCTAssertTrue(stopped.contains { action in
+            if case .finish(let completed, _) = action { return !completed }
+            return false
+        })
+        let restarted = session.process(snapshot: snapshot(id: "new", rate: 192_000), isDuplicate: false, recordingStartPosition: 0.1, restartsForHigherSampleRate: false)
+        XCTAssertTrue(hasBegin(restarted, rate: 192_000))
+        XCTAssertEqual(session.phase, .recording)
+    }
+
     private func snapshot(
         state: MusicPlayerSnapshot.State = .playing,
         id: String = "track",
@@ -136,6 +149,22 @@ final class InjectedRecordingTests: XCTestCase {
         await model.stop()
     }
 
+    func testDeviceInterruptionUsesStatusWithoutAlert() async {
+        let engine = FakeCaptureEngine()
+        let automation = FakeMusicAutomation(snapshot: injectedSnapshot(rate: 48_000))
+        let model = makeModel(engine: engine, automation: automation)
+        await model.start()
+        await assertEventually { engine.begunRates == [48_000] }
+        let message = "The default output device changed. Stopped and discarded the incomplete recording."
+        engine.onNotice?(message)
+        engine.onCaptureStopped?()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.isRecording)
+        XCTAssertEqual(model.status, message)
+        XCTAssertTrue(model.logEvents.contains { $0.message == message })
+    }
+
     private func makeModel(engine: FakeCaptureEngine, automation: FakeMusicAutomation) -> RecorderViewModel {
         let model = RecorderViewModel(engine: engine, musicAutomation: automation)
         model.outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Tests \(UUID().uuidString)", isDirectory: true)
@@ -164,6 +193,7 @@ private final class FakeCaptureEngine: AudioCaptureControlling {
     var onFileStarted: ((String) -> Void)?
     var onFileFinished: ((URL, RecordingQuality) -> Void)?
     var onError: ((String) -> Void)?
+    var onNotice: ((String) -> Void)?
     var onCaptureStopped: (() -> Void)?
     var onSampleRateChanged: ((Int) -> Void)?
     var begunRates: [Int] = []

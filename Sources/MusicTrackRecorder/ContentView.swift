@@ -11,15 +11,18 @@ struct ContentView: View {
         recordingCard
         .padding(10)
         .frame(width: 320, height: 132)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(LyrebirdTheme.canvas)
         .onAppear {
             Task { await model.refreshNowPlaying() }
         }
         .onReceive(timer) { _ in model.updateElapsed() }
-        .alert("录音提示", isPresented: errorIsPresented) {
-            Button("打开权限设置") { model.openRelevantPermissionSettings() }
-            Button("在 Finder 中显示应用") { model.revealApplication() }
-            Button("知道了", role: .cancel) { model.errorMessage = nil }
+        .alert("Recording Notice", isPresented: errorIsPresented) {
+            if let action = model.errorAction {
+                Button(action == .automation ? "Open Automation Settings" : "Open Audio & Screen Recording Settings") {
+                    model.openRelevantPermissionSettings()
+                }
+            }
+            Button("OK", role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
         }
@@ -38,8 +41,8 @@ struct ContentView: View {
     }
 
     private var recordingCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
                 artwork
                 VStack(alignment: .leading, spacing: 2) {
                     if model.automaticMode {
@@ -60,14 +63,15 @@ struct ContentView: View {
                             height: 12
                         )
                     } else {
-                        TextField(model.isRecording ? "下一首名称" : model.currentFileName, text: $model.trackTitle)
+                        TextField(model.isRecording ? "Next Track Name" : model.currentFileName, text: $model.trackTitle)
                             .font(.callout.weight(.semibold))
                             .textFieldStyle(.plain)
                             .disabled(model.isBusy)
                     }
-                    HStack(spacing: 4) {
-                        Image(systemName: statusTone.icon)
-                            .foregroundStyle(statusTone.color)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(statusTone.color)
+                            .frame(width: 5, height: 5)
                         Text(model.status)
                             .foregroundStyle(statusTone.color)
                     }
@@ -85,7 +89,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(model.isBusy)
-                    .accessibilityLabel("保存并切分下一首")
+                    .accessibilityLabel("Save and Split Next Track")
                 }
                 recordButton
                 settingsMenu
@@ -94,22 +98,26 @@ struct ContentView: View {
             Group {
                 if model.automaticMode {
                     ProgressView(value: songProgress)
-                        .tint(statusTone.color)
+                        .progressViewStyle(.linear)
+                        .tint(model.isRecording ? LyrebirdTheme.accent : Color.secondary.opacity(0.35))
                     HStack {
                         Text("\(TrackFileNaming.shortTime(model.detectedPosition)) / \(TrackFileNaming.shortTime(model.detectedDuration))")
                         Spacer()
                         Text(model.captureFormatText)
                     }
-                    .font(.caption2)
+                    .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.secondary)
                 }
             }
             .frame(height: 26)
             .opacity(model.automaticMode && model.detectedDuration > 0 ? 1 : 0)
         }
-        .padding(8)
-        .background(statusTone.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        .animation(.easeInOut(duration: 0.25), value: statusTone)
+        .padding(10)
+        .background(LyrebirdTheme.card, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(LyrebirdTheme.separator, lineWidth: 1)
+        }
     }
 
     @ViewBuilder
@@ -118,14 +126,14 @@ struct ContentView: View {
             Image(nsImage: image)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
-                .frame(width: 42, height: 42)
-                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
         } else {
             Image(systemName: "music.note")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(width: 42, height: 42)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 5))
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(LyrebirdTheme.accent)
+                .frame(width: 46, height: 46)
+                .background(LyrebirdTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 
@@ -144,42 +152,30 @@ struct ContentView: View {
 
         var color: Color {
             switch self {
-            case .idle: return .secondary
-            case .waiting: return .blue
-            case .recording: return .red
+            case .idle, .waiting: return .secondary
+            case .recording: return LyrebirdTheme.accent
             case .success: return .green
             case .warning: return .orange
             case .error: return .red
             }
         }
-
-        var icon: String {
-            switch self {
-            case .idle: return "music.note"
-            case .waiting: return "clock"
-            case .recording: return "record.circle"
-            case .success: return "checkmark.circle"
-            case .warning: return "exclamationmark.triangle"
-            case .error: return "xmark.octagon"
-            }
-        }
     }
 
     private var statusTone: StatusTone {
-        let text = model.status
-        if model.errorMessage != nil || text.contains("失败") || text.contains("无法") {
+        let text = model.status.lowercased()
+        if model.errorMessage != nil || text.contains("failed") || text.contains("could not") || text.contains("unable") {
             return .error
         }
-        if text.contains("已保存") {
+        if text.contains("saved") {
             return .success
         }
-        if text.contains("跳过") || text.contains("未从头") || text.contains("不完整") {
+        if text.contains("skipped") || text.contains("not from beginning") || text.contains("incomplete") || text.contains("discarded") {
             return .warning
         }
         if model.isRecording {
             return .recording
         }
-        if model.isBusy || text.contains("等待") || text.contains("识别") {
+        if model.isBusy || text.contains("waiting") || text.contains("reading") || text.contains("identifying") {
             return .waiting
         }
         return .idle
@@ -187,14 +183,16 @@ struct ContentView: View {
 
     private var settingsMenu: some View {
         Menu {
-            Button("设置…") { showingSettings = true }
+            Button("Settings…") { showingSettings = true }
             Divider()
-            Button("录音文件") { showingFiles = true }
-            Button("查看日志") { showingLogs = true }
+            Button("Recordings") { showingFiles = true }
+            Button("View Logs") { showingLogs = true }
         } label: {
             Image(systemName: "gearshape")
-                .font(.callout)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
+                .frame(width: 26, height: 30)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -210,19 +208,29 @@ struct ContentView: View {
                 }
             }
         } label: {
-            if model.isBusy && !model.isRecording {
-                ProgressView()
-                    .frame(width: 36, height: 36)
-            } else {
-                Image(systemName: model.isRecording ? "stop.fill" : "record.circle")
-                    .font(.system(size: model.isRecording ? 28 : 36, weight: .bold))
-                    .foregroundStyle(model.isBusy ? .orange : .red)
-                    .frame(width: 36, height: 36)
+            ZStack {
+                if model.isBusy && !model.isRecording {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if model.isRecording {
+                    Circle()
+                        .fill(LyrebirdTheme.accent)
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+                } else {
+                    Circle()
+                        .strokeBorder(LyrebirdTheme.accent, lineWidth: 1.6)
+                    Circle()
+                        .fill(LyrebirdTheme.accent)
+                        .frame(width: 9, height: 9)
+                }
             }
+            .frame(width: 34, height: 34)
         }
         .buttonStyle(.plain)
         .disabled(model.isBusy && !model.isRecording)
-        .accessibilityLabel(model.isRecording ? "停止录音" : "开始录音")
+        .accessibilityLabel(model.isRecording ? "Stop Recording" : "Start Recording")
     }
 
     private var errorIsPresented: Binding<Bool> {

@@ -17,9 +17,9 @@ struct DiagnosticView: View {
                     .font(.title2)
                     .foregroundStyle(.red)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("权限与采集诊断")
+                    Text("Permission & Capture Diagnostics")
                         .font(.title3.bold())
-                    Text("实际测试系统音频流，不保存任何录音")
+                    Text("Tests the system audio stream without saving a recording")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -35,7 +35,7 @@ struct DiagnosticView: View {
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
 
             if let url = model.savedReportURL {
-                Text("报告已保存：\(url.lastPathComponent)")
+                Text("Report saved: \(url.lastPathComponent)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -44,16 +44,21 @@ struct DiagnosticView: View {
                 Button {
                     Task { await model.run() }
                 } label: {
-                    Label(model.isRunning ? "正在诊断…" : "运行诊断", systemImage: "play.fill")
+                    Label(model.isRunning ? "Diagnosing…" : "Run Diagnostics", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.isRunning)
 
-                Button("保存报告") { model.saveReport() }
+                Button("Scan Punctuation Conflicts") {
+                    Task { await model.scanPunctuationConflicts() }
+                }
+                .disabled(model.isRunning)
+
+                Button("Save Report") { model.saveReport() }
                     .disabled(model.isRunning)
 
                 Spacer()
-                Button("关闭") { dismiss() }
+                Button("Close") { dismiss() }
             }
         }
         .padding(20)

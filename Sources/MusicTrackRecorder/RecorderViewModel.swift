@@ -28,6 +28,11 @@ enum LogLevel {
     case error
 }
 
+enum RecorderErrorAction: Equatable {
+    case automation
+    case audioPermission
+}
+
 struct LogEvent: Identifiable, Equatable {
     let id = UUID()
     let date = Date()
@@ -39,9 +44,9 @@ struct LogEvent: Identifiable, Equatable {
 final class RecorderViewModel: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var isBusy = false
-    @Published private(set) var status = "准备就绪"
-    @Published private(set) var currentFileName = "尚未创建音频文件"
-    @Published private(set) var detectedTrack = "等待播放歌曲"
+    @Published private(set) var status = "Ready"
+    @Published private(set) var currentFileName = "No audio file created"
+    @Published private(set) var detectedTrack = "Waiting for a Song"
     @Published private(set) var currentTrack: TrackMetadata?
     @Published private(set) var detectedArtworkData: Data?
     @Published private(set) var detectedPosition = 0.0
@@ -63,6 +68,7 @@ final class RecorderViewModel: ObservableObject {
     }
     @Published var trackTitle = ""
     @Published var outputDirectory: URL
+    @Published private(set) var organizationStatus = ""
     @Published var errorMessage: String?
 
     var captureSampleRateText: String {
@@ -81,6 +87,17 @@ final class RecorderViewModel: ObservableObject {
         }
     }
 
+    var errorAction: RecorderErrorAction? {
+        guard let errorMessage else { return nil }
+        if errorMessage.contains("Automation") {
+            return .automation
+        }
+        if errorMessage.contains("Screen") || errorMessage.contains("system audio") {
+            return .audioPermission
+        }
+        return nil
+    }
+
     func clearLogs() {
         logEvents.removeAll()
     }
@@ -95,11 +112,13 @@ final class RecorderViewModel: ObservableObject {
     private let engine: any AudioCaptureControlling
     private let musicAutomation: any MusicAutomationControlling
     private let musicLibrary = MusicLibrary()
+    private let organizationHistoryStore = LibraryOrganizationHistoryStore()
     private var monitorTask: Task<Void, Never>?
     private var elapsedTimer: Timer?
     private var startedAt: Date?
     private var recordingStartPosition = 0.0
     private var hasUnfinishedFile = false
+    private var pendingStopNotice: String?
     private var isRefreshingNowPlaying = false
     private var lastNowPlayingRefresh = Date.distantPast
 
@@ -126,7 +145,7 @@ final class RecorderViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.currentFileName = name
-                self.status = self.automaticMode ? "正在自动录音" : "正在录音"
+                self.status = self.automaticMode ? "Recording Automatically" : "Recording"
                 self.hasUnfinishedFile = true
             }
         }
@@ -134,7 +153,13 @@ final class RecorderViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.hasUnfinishedFile = false
-                self.appendLog(.success, "录制完成：\(url.lastPathComponent)")
+                self.appendLog(.success, "Recording completed: \(url.lastPathComponent)")
+                for warning in quality.metadataWarnings {
+                    self.appendLog(.warning, "\(url.lastPathComponent): \(warning)")
+                }
+                if let track = try? LibraryOrganizer.metadata(for: url) {
+                    await self.musicLibrary.register(track, at: url)
+                }
                 let info = try? await RecordingQualityReport.info(url: url)
                 self.files.insert(
                     RecordedFile(url: url, quality: quality, info: info),
@@ -146,6 +171,13 @@ final class RecorderViewModel: ObservableObject {
             Task { @MainActor in
                 self?.errorMessage = message
                 self?.appendLog(.error, message)
+            }
+        }
+        engine.onNotice = { [weak self] message in
+            Task { @MainActor in
+                self?.pendingStopNotice = message
+                self?.errorMessage = nil
+                self?.appendLog(.warning, message)
             }
         }
         engine.onCaptureStopped = { [weak self] in
@@ -163,8 +195,9 @@ final class RecorderViewModel: ObservableObject {
     func start() async {
         guard !isRecording, !isBusy else { return }
         isBusy = true
-        status = "正在请求音频捕获…"
+        status = "Requesting Audio Capture…"
         errorMessage = nil
+        pendingStopNotice = nil
 
         do {
             try FileManager.default.createDirectory(
@@ -172,22 +205,22 @@ final class RecorderViewModel: ObservableObject {
                 withIntermediateDirectories: true
             )
             if automaticMode {
-                status = "正在检查文件夹中的已有歌曲…"
+                status = "Checking for Existing Songs…"
                 await musicLibrary.prepare(in: outputDirectory)
             }
             let title = TrackFileNaming.sanitizedTitle(trackTitle)
             isRecording = true
             startedAt = Date()
             startElapsedTimer()
-            currentFileName = automaticMode ? "从歌曲开始时自动创建文件" : "等待 Apple Music 音频…"
-            status = "等待 Apple Music 播放…"
+            currentFileName = automaticMode ? "File will be created at the start of a song" : "Waiting for Apple Music audio…"
+            status = "Waiting for Apple Music…"
 
             guard try await waitForMusicPlayback(), isRecording else {
                 isBusy = false
                 return
             }
 
-            status = "正在请求音频捕获…"
+            status = "Requesting Audio Capture…"
             try await engine.start(
                 outputDirectory: outputDirectory,
                 title: title,
@@ -197,16 +230,16 @@ final class RecorderViewModel: ObservableObject {
             trackTitle = ""
 
             if automaticMode {
-                detectedTrack = "正在读取 Apple Music…"
-                status = "正在识别歌曲…"
+                detectedTrack = "Reading Apple Music…"
+                status = "Identifying Track…"
                 startMusicMonitoring()
             } else {
-                status = "正在录音"
+                status = "Recording"
             }
         } catch {
             errorMessage = error.localizedDescription
-            appendLog(.error, "启动录音失败：\(error.localizedDescription)")
-            status = "无法开始录音"
+            appendLog(.error, "Failed to start recording: \(error.localizedDescription)")
+            status = "Could Not Start Recording"
             isRecording = false
             elapsedTimer?.invalidate()
             elapsedTimer = nil
@@ -225,7 +258,7 @@ final class RecorderViewModel: ObservableObject {
                 detectedPosition = snapshot.position
                 detectedDuration = snapshot.duration
                 currentTrack = snapshot.track
-                detectedTrack = snapshot.track?.displayText ?? "等待播放歌曲"
+                detectedTrack = snapshot.track?.displayText ?? "Waiting for a Song"
                 if snapshot.state == .playing {
                     if snapshot.sampleRate > 0 {
                         recordingStartPosition = snapshot.position
@@ -234,21 +267,21 @@ final class RecorderViewModel: ObservableObject {
                     unknownSampleRateCount += 1
                     if unknownSampleRateCount >= 30 {
                         recordingStartPosition = snapshot.position
-                        appendLog(.warning, "Apple Music 采样率仍未知，使用音频流默认格式")
+                        appendLog(.warning, "Apple Music sample rate is still unknown; using the audio stream's default format")
                         return true
                     }
-                    status = "等待 Apple Music 采样率…"
+                    status = "Waiting for Apple Music Sample Rate…"
                 } else {
                     unknownSampleRateCount = 0
-                    status = "等待 Apple Music 播放…"
+                    status = "Waiting for Apple Music…"
                 }
             } catch let error as MusicAutomationError {
                 if case .automationPermission = error {
                     throw error
                 }
-                status = "等待 Apple Music 曲目信息…"
+                status = "Waiting for Apple Music Track Information…"
             } catch {
-                status = "等待 Apple Music 曲目信息…"
+                status = "Waiting for Apple Music Track Information…"
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
@@ -276,25 +309,25 @@ final class RecorderViewModel: ObservableObject {
         }
         let discardedIncompleteFile = automaticMode && hasUnfinishedFile
         isBusy = true
-        status = "正在保存音频…"
+        status = "Saving Audio…"
         await engine.stop()
         resetAfterStop()
         if discardedIncompleteFile {
-            appendLog(.warning, "当前歌曲未录完整，文件已丢弃")
-            status = "未完成，未保存"
-            currentFileName = "当前歌曲未录完整，文件已丢弃"
+            appendLog(.warning, "Current song was incomplete; file discarded")
+            status = "Incomplete; Not Saved"
+            currentFileName = "Current song was incomplete; file discarded"
         }
     }
 
     func split() async {
         guard isRecording, !isBusy, !automaticMode else { return }
         isBusy = true
-        status = "正在保存并切分…"
+        status = "Saving and Splitting…"
         let title = TrackFileNaming.sanitizedTitle(trackTitle)
         await engine.split(title: title)
         trackTitle = ""
-        currentFileName = "等待下一首音频…"
-        status = "正在录音"
+        currentFileName = "Waiting for the next audio track…"
+        status = "Recording"
         isBusy = false
     }
 
@@ -328,12 +361,12 @@ final class RecorderViewModel: ObservableObject {
             let snapshot = try await musicAutomation.snapshot(includeArtwork: true)
             guard !isRecording else { return }
             currentTrack = snapshot.track
-            detectedTrack = snapshot.track?.displayText ?? "等待播放歌曲"
+            detectedTrack = snapshot.track?.displayText ?? "Waiting for a Song"
             detectedArtworkData = snapshot.track?.artworkData
             detectedPosition = snapshot.position
             detectedDuration = snapshot.duration
         } catch {
-            // 待机刷新不影响录音或权限设置。
+            // Idle refreshes do not affect recording or permission settings.
         }
     }
 
@@ -344,7 +377,7 @@ final class RecorderViewModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "选择"
+        panel.prompt = "Choose"
         panel.directoryURL = outputDirectory
 
         if panel.runModal() == .OK, let url = panel.url {
@@ -354,8 +387,9 @@ final class RecorderViewModel: ObservableObject {
 
     func setOutputDirectory(_ url: URL) {
         outputDirectory = url
+        organizationStatus = ""
         UserDefaults.standard.set(url.path, forKey: "outputDirectoryPath")
-        appendLog(.info, "保存目录已更改：\(url.path)")
+        appendLog(.info, "Save folder changed: \(url.path)")
     }
 
     func openOutputDirectory() {
@@ -364,6 +398,65 @@ final class RecorderViewModel: ObservableObject {
             withIntermediateDirectories: true
         )
         NSWorkspace.shared.open(outputDirectory)
+    }
+
+    var canUndoOrganization: Bool {
+        guard let history = organizationHistoryStore.load() else { return false }
+        return history.directory.standardizedFileURL.path == outputDirectory.standardizedFileURL.path
+            && !history.moves.isEmpty
+    }
+
+    func prepareOrganizationPreview() async -> LibraryOrganizationPlan? {
+        guard !isRecording, !isBusy else { return nil }
+        isBusy = true
+        organizationStatus = "Generating Preview…"
+        let plan = await LibraryOrganizer().plan(in: outputDirectory)
+        organizationStatus = "Preview: move \(plan.moveCount), conflicts \(plan.conflictCount), organized \(plan.unchangedCount), skipped \(plan.skippedCount)"
+        isBusy = false
+        return plan
+    }
+
+    func executeOrganization(_ plan: LibraryOrganizationPlan) async {
+        guard !isRecording, !isBusy,
+              plan.directory.standardizedFileURL.path == outputDirectory.standardizedFileURL.path else { return }
+        isBusy = true
+        organizationStatus = "Organizing…"
+        let report = await LibraryOrganizer().execute(plan)
+        if let history = report.history {
+            organizationHistoryStore.save(history)
+        }
+        for message in report.messages {
+            appendLog(.info, message)
+        }
+        appendLog(.info, report.summary)
+        organizationStatus = report.summary
+        isBusy = false
+        await refreshNowPlaying()
+    }
+
+    func undoOrganization() async {
+        guard !isRecording, !isBusy,
+              let history = organizationHistoryStore.load(),
+              history.directory.standardizedFileURL.path == outputDirectory.standardizedFileURL.path else { return }
+        isBusy = true
+        organizationStatus = "Undoing Organization…"
+        let report = await LibraryOrganizer().undo(history)
+        if report.remainingMoves.isEmpty {
+            organizationHistoryStore.clear()
+        } else {
+            organizationHistoryStore.save(LibraryOrganizationHistory(
+                directory: history.directory,
+                date: Date(),
+                moves: report.remainingMoves
+            ))
+        }
+        for message in report.messages {
+            appendLog(.info, message)
+        }
+        appendLog(.info, report.summary)
+        organizationStatus = report.summary
+        isBusy = false
+        await refreshNowPlaying()
     }
 
     func reveal(_ file: RecordedFile) {
@@ -391,7 +484,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func openRelevantPermissionSettings() {
-        if errorMessage?.contains("自动化") == true {
+        if errorMessage?.contains("Automation") == true {
             openAutomationSettings()
         } else {
             openPermissionSettings()
@@ -413,6 +506,7 @@ final class RecorderViewModel: ObservableObject {
 
     private func monitorMusicWithSession() async {
         var session = RecordingSession()
+        var enrichedTracks: [String: TrackMetadata] = [:]
 
         while !Task.isCancelled && isRecording {
             do {
@@ -463,6 +557,31 @@ final class RecorderViewModel: ObservableObject {
                         }
                     }
 
+                    if needsPreparation, !isDuplicate, !rejectsMidTrack,
+                       let originalTrack = snapshot.track {
+                        if let cached = enrichedTracks[snapshot.trackID] {
+                            snapshot = snapshot.withTrack(
+                                cached.withArtwork(originalTrack.artworkData ?? cached.artworkData)
+                            )
+                        } else if originalTrack.needsCatalogEnrichment {
+                            do {
+                                let enriched = try await CatalogMetadataStore.shared.enrich(
+                                    originalTrack,
+                                    duration: snapshot.duration
+                                )
+                                enrichedTracks[snapshot.trackID] = enriched
+                                snapshot = snapshot.withTrack(enriched)
+                                if enriched != originalTrack {
+                                    appendLog(.info, "Catalog metadata enriched: \(originalTrack.displayText)")
+                                }
+                            } catch {
+                                enrichedTracks[snapshot.trackID] = originalTrack
+                                appendLog(.warning, "Could not enrich catalog metadata: \(error.localizedDescription)")
+                            }
+                        }
+                    }
+                    guard !Task.isCancelled, isRecording else { return }
+
                     let actions = session.process(
                         snapshot: snapshot,
                         isDuplicate: isDuplicate,
@@ -486,8 +605,8 @@ final class RecorderViewModel: ObservableObject {
                         try await perform(action)
                     }
                     detectedTrack = snapshot.state == .stopped
-                        ? "Apple Music 已停止播放"
-                        : snapshot.track?.displayText ?? "播放已暂停"
+                        ? "Apple Music Playback Stopped"
+                        : snapshot.track?.displayText ?? "Playback Paused"
                     if snapshot.state == .stopped {
                         detectedArtworkData = nil
                     }
@@ -501,9 +620,9 @@ final class RecorderViewModel: ObservableObject {
                     await stop()
                     return
                 }
-                status = "暂时无法读取歌曲，正在重试…"
+                status = "Could not read the track; retrying…"
             } catch {
-                status = "暂时无法读取歌曲，正在重试…"
+                status = "Could not read the track; retrying…"
             }
 
             try? await Task.sleep(nanoseconds: 200_000_000)
@@ -515,11 +634,8 @@ final class RecorderViewModel: ObservableObject {
         case .begin(let metadata, let sampleRate):
             await engine.updateSampleRate(sampleRate)
             await engine.beginTrack(title: metadata.fileTitle, metadata: metadata)
-        case .finish(let completed, let register):
+        case .finish(let completed, _):
             await engine.finishTrack(completed: completed)
-            if let register {
-                await musicLibrary.register(register)
-            }
         case .pause:
             await engine.pauseTrack()
         case .resume:
@@ -542,11 +658,16 @@ final class RecorderViewModel: ObservableObject {
         elapsed = 0
         hasUnfinishedFile = false
         currentTrack = nil
-        detectedTrack = "等待播放歌曲"
+        detectedTrack = "Waiting for a Song"
         detectedArtworkData = nil
         detectedPosition = 0
         detectedDuration = 0
-        status = "准备就绪"
+        status = "Ready"
+        if let pendingStopNotice {
+            currentFileName = "Incomplete recording deleted"
+            status = pendingStopNotice
+            self.pendingStopNotice = nil
+        }
         lastNowPlayingRefresh = .distantPast
         Task { await refreshNowPlaying() }
     }

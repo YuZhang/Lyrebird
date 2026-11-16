@@ -34,6 +34,16 @@ final class RecorderSettingsTests: XCTestCase {
         XCTAssertEqual(model.captureFormatText, "48 kHz · 256 kbps")
     }
 
+    func testErrorActionMatchesPermissionCause() {
+        let model = RecorderViewModel()
+        model.errorMessage = "Automation permission is required"
+        XCTAssertEqual(model.errorAction, .automation)
+        model.errorMessage = "Screen & System Audio Recording permission is required"
+        XCTAssertEqual(model.errorAction, .audioPermission)
+        model.errorMessage = "Audio file write failed"
+        XCTAssertNil(model.errorAction)
+    }
+
     func testOutputDirectoryChangePersists() {
         let key = "outputDirectoryPath"
         let originalValue = UserDefaults.standard.string(forKey: key)

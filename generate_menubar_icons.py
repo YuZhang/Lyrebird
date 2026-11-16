@@ -1,65 +1,49 @@
 import json
 import shutil
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 root = Path(__file__).resolve().parent
-size = 128
-scale = size / 1024
+source_size = 1024
+canvas_size = (256, 208)
+content_size = (240, 192)
+fixed_crop = (145, 240, 915, 855)
 
 
-def bezier(start, control1, control2, end, steps=80):
-    points = []
-    for i in range(steps + 1):
-        t = i / steps
-        u = 1 - t
-        x = u**3 * start[0] + 3 * u**2 * t * control1[0] + 3 * u * t**2 * control2[0] + t**3 * end[0]
-        y = u**3 * start[1] + 3 * u**2 * t * control1[1] + 3 * u * t**2 * control2[1] + t**3 * end[1]
-        points.append((x, y))
-    return points
-
-
-def feather(start, control1, control2, end, inner_start, inner_control1, inner_control2):
-    outer = bezier(start, control1, control2, end)
-    inner = bezier(inner_start, inner_control1, inner_control2, end)
-    return outer + list(reversed(inner))
-
-
-def scaled(points):
-    return [(x * scale, y * scale) for x, y in points]
-
-
-def box(values):
-    return tuple(round(value * scale) for value in values)
-
-
-first = feather(
-    (430, 585), (345, 455), (245, 505), (155, 245),
-    (405, 635), (310, 540), (220, 500)
-)
-second = feather(
-    (450, 610), (360, 520), (265, 650), (190, 800),
-    (420, 665), (330, 580), (235, 680)
-)
-wing_angles = [(195, 335), (155, 295), (125, 265), (155, 295)]
-frames = []
-
-for frame, (start, end) in enumerate(wing_angles):
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+def bird_frame(frame):
+    image = Image.new("L", (source_size, source_size), 0)
     draw = ImageDraw.Draw(image)
-    black = (0, 0, 0, 255)
+    white = 255
 
-    draw.polygon(scaled(first), fill=black)
-    draw.polygon(scaled(second), fill=black)
-    draw.ellipse(box((355, 405, 700, 710)), fill=black)
-    draw.ellipse(box((570, 275, 750, 455)), fill=black)
-    draw.polygon(scaled([(730, 350), (850, 390), (733, 420)]), fill=black)
+    draw.polygon([(420, 565), (320, 435), (185, 250), (255, 470), (160, 400), (350, 620)], fill=white)
+    draw.polygon([(405, 620), (300, 690), (195, 835), (350, 745), (475, 665)], fill=white)
+    draw.polygon([(350, 535), (535, 405), (730, 500), (755, 640), (610, 745),
+                  (440, 715), (340, 625)], fill=white)
+    draw.polygon([(585, 440), (600, 300), (720, 265), (790, 355), (745, 465)], fill=white)
+    draw.polygon([(765, 340), (895, 395), (760, 430)], fill=white)
 
-    draw.arc(box((410, 435, 645, 655)), start=start, end=end, fill=(0, 0, 0, 0), width=max(2, round(40 * scale)))
-    draw.ellipse(box((672, 340, 692, 360)), fill=(0, 0, 0, 0))
+    if frame == 0:
+        draw.polygon([(440, 565), (585, 475), (680, 590), (535, 650)], fill=0)
+    elif frame in (1, 3):
+        draw.polygon([(445, 555), (575, 435), (685, 565), (555, 615)], fill=0)
+    else:
+        draw.polygon([(450, 550), (565, 370), (680, 530), (570, 565)], fill=0)
+        draw.polygon([(505, 515), (585, 385), (635, 525)], fill=white)
+    draw.polygon([(704, 330), (724, 340), (711, 357), (695, 347)], fill=0)
 
+    # A fixed crop keeps the body stationary throughout the animation.
+    cropped = image.crop(fixed_crop)
+    contained = ImageOps.contain(cropped, content_size, Image.Resampling.LANCZOS)
+    mask = Image.new("L", canvas_size, 0)
+    mask.paste(contained, ((canvas_size[0]-contained.width)//2, (canvas_size[1]-contained.height)//2))
+    result = Image.new("RGBA", canvas_size, (0, 0, 0, 255))
+    result.putalpha(mask)
+    return result
+
+
+frames = [bird_frame(frame) for frame in range(4)]
+for frame, image in enumerate(frames):
     image.save(root / "Resources" / f"MenuBarBird{frame}.png")
-    frames.append(image)
 
 assets = root / "Resources" / "Assets.xcassets"
 assets.mkdir(exist_ok=True)
@@ -77,7 +61,7 @@ for frame, image in enumerate(frames):
         "info": {"author": "xcode", "version": 1},
     }))
 
-preview = Image.new("RGBA", (size * 4, size), (255, 255, 255, 255))
+preview = Image.new("RGBA", (canvas_size[0] * 4, canvas_size[1]), (255, 255, 255, 255))
 for frame, image in enumerate(frames):
-    preview.alpha_composite(image, (frame * size, 0))
+    preview.alpha_composite(image, (frame * canvas_size[0], 0))
 preview.save(root / "diagnostics" / "menubar-bird-frames.png")

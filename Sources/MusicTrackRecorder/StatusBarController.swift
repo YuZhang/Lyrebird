@@ -3,7 +3,7 @@ import SwiftUI
 
 @MainActor
 final class StatusBarController: NSObject {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: 24)
+    private let statusItem = NSStatusBar.system.statusItem(withLength: 28)
     private let popover = NSPopover()
     private let model: RecorderViewModel
     private var animationTimer: Timer?
@@ -38,11 +38,11 @@ final class StatusBarController: NSObject {
     private func updateImage() {
         frame = model.isRecording ? (frame + 1) % 4 : 0
         let image = NSImage(named: "MenuBarBird\(frame)")
-        image?.size = NSSize(width: 18, height: 18)
+        image?.size = NSSize(width: 26, height: 21)
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.needsDisplay = true
-        statusItem.button?.toolTip = model.isRecording ? "Lyrebird 录制中" : "Lyrebird 未录制"
+        statusItem.button?.toolTip = model.isRecording ? "Lyrebird — Recording" : "Lyrebird — Not Recording"
     }
 
     @objc private func handleClick() {
@@ -65,9 +65,9 @@ final class StatusBarController: NSObject {
 
     private func showMenu() {
         let menu = NSMenu()
-        menu.addItem(withTitle: "打开 Lyrebird", action: #selector(openPopover), keyEquivalent: "")
+        menu.addItem(withTitle: "Open Lyrebird", action: #selector(openPopover), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 Lyrebird", action: #selector(quit), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Lyrebird", action: #selector(quit), keyEquivalent: "q")
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil

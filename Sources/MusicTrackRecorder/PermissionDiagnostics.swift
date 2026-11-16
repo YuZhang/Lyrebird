@@ -7,33 +7,33 @@ import Security
 final class PermissionDiagnosticRunner {
     func run(outputDirectory: URL) async -> String {
         var lines: [String] = []
-        lines.append("Lyrebird权限诊断")
-        lines.append("时间：\(ISO8601DateFormatter().string(from: Date()))")
-        lines.append("系统版本：\(ProcessInfo.processInfo.operatingSystemVersionString)")
-        lines.append("应用路径：\(Bundle.main.bundleURL.path)")
-        lines.append("Bundle ID：\(Bundle.main.bundleIdentifier ?? "未知")")
-        lines.append("应用版本：\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "未知")")
-        lines.append("签名要求：\(designatedRequirement())")
+        lines.append("Lyrebird Permission Diagnostics")
+        lines.append("Time: \(ISO8601DateFormatter().string(from: Date()))")
+        lines.append("System version: \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        lines.append("Application path: \(Bundle.main.bundleURL.path)")
+        lines.append("Bundle ID: \(Bundle.main.bundleIdentifier ?? "Unknown")")
+        lines.append("Application version: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") ?? "Unknown")")
+        lines.append("Designated requirement: \(designatedRequirement())")
         lines.append("")
 
         let preflight = CGPreflightScreenCaptureAccess()
-        lines.append("1. 屏幕录制预检：\(preflight ? "通过" : "未通过（仅作参考，不直接代表音频流无法启动）")")
+        lines.append("1. Screen recording preflight: \(preflight ? "Passed" : "Not passed (informational only; does not prove the audio stream cannot start)")")
 
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
                 onScreenWindowsOnly: false
             )
-            lines.append("2. SCShareableContent：成功（\(content.displays.count) 个显示器，\(content.applications.count) 个应用）")
+            lines.append("2. SCShareableContent: Succeeded (\(content.displays.count) displays, \(content.applications.count) applications)")
 
             guard let display = content.displays.first else {
-                lines.append("3. SCStream：未运行（没有可用显示器）")
+                lines.append("3. SCStream: Not run (no display available)")
                 throw DiagnosticError.displayUnavailable
             }
             guard let music = content.applications.first(where: {
                 $0.bundleIdentifier == "com.apple.Music"
             }) else {
-                lines.append("3. SCStream：未运行（Apple Music 未启动）")
+                lines.append("3. SCStream: Not run (Apple Music is not running)")
                 throw DiagnosticError.musicUnavailable
             }
 
@@ -52,24 +52,24 @@ final class PermissionDiagnosticRunner {
             let queue = DispatchQueue(label: "com.kimi.MusicTrackRecorder.diagnostics")
             try stream.addStreamOutput(sink, type: .audio, sampleHandlerQueue: queue)
             try await stream.startCapture()
-            lines.append("3. SCStream 实际启动：成功（未保存音频）")
+            lines.append("3. SCStream startup: Succeeded (audio not saved)")
             try? await Task.sleep(nanoseconds: 250_000_000)
             try await stream.stopCapture()
         } catch {
             if lines.count < 3 || !lines[lines.count - 1].contains("SCStream") {
-                lines.append("3. SCStream 实际启动：失败")
+                lines.append("3. SCStream startup: Failed")
             } else if !lines[lines.count - 1].contains("SCStream") {
-                lines.append("3. SCStream 实际启动：失败")
+                lines.append("3. SCStream startup: Failed")
             }
-            lines.append("   错误：\(Self.errorDetails(error))")
+            lines.append("   Error: \(Self.errorDetails(error))")
         }
 
         do {
             let snapshot = try await MusicAutomation().snapshot()
-            lines.append("4. Apple Music 自动化读取：成功（播放状态：\(stateText(snapshot.state))）")
+            lines.append("4. Apple Music automation read: Succeeded (playback state: \(stateText(snapshot.state)))")
         } catch {
-            lines.append("4. Apple Music 自动化读取：失败")
-            lines.append("   错误：\(Self.errorDetails(error))")
+            lines.append("4. Apple Music automation read: Failed")
+            lines.append("   Error: \(Self.errorDetails(error))")
         }
 
         do {
@@ -77,46 +77,46 @@ final class PermissionDiagnosticRunner {
             let probe = outputDirectory.appendingPathComponent(".diagnostic-\(UUID().uuidString)")
             try Data().write(to: probe)
             try FileManager.default.removeItem(at: probe)
-            lines.append("5. 保存目录写入：成功")
-            lines.append("   目录：\(outputDirectory.path)")
+            lines.append("5. Save folder write: Succeeded")
+            lines.append("   Folder: \(outputDirectory.path)")
         } catch {
-            lines.append("5. 保存目录写入：失败")
-            lines.append("   错误：\(Self.errorDetails(error))")
+            lines.append("5. Save folder write: Failed")
+            lines.append("   Error: \(Self.errorDetails(error))")
         }
 
         lines.append("")
-        lines.append("说明：本报告不包含歌曲名称、封面或音频内容。")
+        lines.append("Note: This report contains no track names, artwork, or audio content.")
         return lines.joined(separator: "\n")
     }
 
     static func errorDetails(_ error: Error) -> String {
         let nsError = error as NSError
-        return "\(nsError.domain) (\(nsError.code))：\(nsError.localizedDescription)"
+        return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
     }
 
     private func designatedRequirement() -> String {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &code) == errSecSuccess, let code else {
-            return "无法读取"
+            return "Unavailable"
         }
         var requirement: SecRequirement?
         guard SecCodeCopyDesignatedRequirement(code, [], &requirement) == errSecSuccess,
               let requirement else {
-            return "无法读取"
+            return "Unavailable"
         }
         var text: CFString?
         guard SecRequirementCopyString(requirement, [], &text) == errSecSuccess,
               let text else {
-            return "无法读取"
+            return "Unavailable"
         }
         return text as String
     }
 
     private func stateText(_ state: MusicPlayerSnapshot.State) -> String {
         switch state {
-        case .playing: return "播放中"
-        case .paused: return "已暂停"
-        case .stopped: return "已停止"
+        case .playing: return "Playing"
+        case .paused: return "Paused"
+        case .stopped: return "Stopped"
         }
     }
 }
@@ -127,8 +127,8 @@ private enum DiagnosticError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .displayUnavailable: return "没有可用显示器。"
-        case .musicUnavailable: return "Apple Music 未启动。"
+        case .displayUnavailable: return "No display is available."
+        case .musicUnavailable: return "Apple Music is not running."
         }
     }
 }
@@ -144,7 +144,7 @@ private final class DiagnosticAudioSink: NSObject, SCStreamOutput {
 @MainActor
 final class PermissionDiagnosticsViewModel: ObservableObject {
     @Published private(set) var isRunning = false
-    @Published var reportText = "点击“运行诊断”检查实际权限与音频采集状态。"
+    @Published var reportText = "Click Run Diagnostics to check permissions and audio capture."
     @Published private(set) var savedReportURL: URL?
 
     let outputDirectory: URL
@@ -158,14 +158,23 @@ final class PermissionDiagnosticsViewModel: ObservableObject {
         guard !isRunning else { return }
         isRunning = true
         savedReportURL = nil
-        reportText = "正在运行实际诊断…"
+        reportText = "Running diagnostics…"
         reportText = await runner.run(outputDirectory: outputDirectory)
+        isRunning = false
+    }
+
+    func scanPunctuationConflicts() async {
+        guard !isRunning else { return }
+        isRunning = true
+        savedReportURL = nil
+        reportText = "Scanning the library for punctuation variants…"
+        reportText = await LibraryPunctuationScanner().scan(in: outputDirectory)
         isRunning = false
     }
 
     func saveReport() {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Lyrebird诊断.txt"
+        panel.nameFieldStringValue = "Lyrebird Diagnostics.txt"
         panel.allowedContentTypes = [.plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
@@ -173,7 +182,7 @@ final class PermissionDiagnosticsViewModel: ObservableObject {
             try reportText.write(to: url, atomically: true, encoding: .utf8)
             savedReportURL = url
         } catch {
-            reportText += "\n\n报告保存失败：\(PermissionDiagnosticRunner.errorDetails(error))"
+            reportText += "\n\nFailed to save report: \(PermissionDiagnosticRunner.errorDetails(error))"
         }
     }
 }

@@ -22,8 +22,8 @@ struct RecordingSession {
     }
 
     private(set) var phase = Phase.idle
-    var status = "准备就绪"
-    var currentFileName = "尚未创建音频文件"
+    var status = "Ready"
+    var currentFileName = "No audio file created"
     var observedTrackID: String?
     var writingTrackID: String?
     var writingTrack: TrackMetadata?
@@ -71,27 +71,27 @@ struct RecordingSession {
                 if isDuplicate {
                     skippedTrackID = snapshot.trackID
                     phase = .skipped
-                    actions.append(.log("歌曲已存在，已跳过：\(track.displayText)"))
-                    currentFileName = "文件夹中已有此歌曲，未重复录制"
-                    status = "歌曲已存在，已跳过"
+                    actions.append(.log("Song already exists; skipped: \(track.displayText)"))
+                    currentFileName = "Song already exists in the folder; not recorded again"
+                    status = "Song already exists; skipped"
                 } else if firstObservation && !trackRestarted && !RecordingCompleteness.canStart(at: recordingStartPosition) {
                     phase = .waitingForPlayback
-                    currentFileName = "当前歌曲未从头录制"
-                    status = "等待下一首自动开始…"
+                    currentFileName = "Current song was not recorded from the beginning"
+                    status = "Waiting for the next song…"
                 } else if snapshot.sampleRate <= 0 {
                     phase = .waitingForFormat
-                    actions.append(.log("无法确认采样率，未录制：\(track.displayText)"))
-                    currentFileName = "采样率未知，未录制"
-                    status = "等待下一首自动开始…"
+                    actions.append(.log("Could not confirm sample rate; not recorded: \(track.displayText)"))
+                    currentFileName = "Sample rate unknown; not recorded"
+                    status = "Waiting for the next song…"
                 } else if !RecordingCompleteness.canStart(at: snapshot.position),
                           restartedForHigherRateTrackID != snapshot.trackID {
                     restartedForHigherRateTrackID = snapshot.trackID
                     awaitingRestartTrackID = snapshot.trackID
                     phase = .waitingForRestart
                     actions.append(.restart)
-                    actions.append(.log("采样率确认为 \(snapshot.sampleRate) Hz，从头开始录制"))
-                    currentFileName = "采样率已确认，从头开始录制"
-                    status = "正在从头录制…"
+                    actions.append(.log("Sample rate confirmed at \(snapshot.sampleRate) Hz; recording from the beginning"))
+                    currentFileName = "Sample rate confirmed; recording from the beginning"
+                    status = "Starting from the beginning…"
                     previousPosition = snapshot.position
                     previousDuration = snapshot.duration
                     return actions
@@ -101,8 +101,8 @@ struct RecordingSession {
                     writingTrackID = snapshot.trackID
                     writingTrack = track
                     writingSampleRate = snapshot.sampleRate
-                    currentFileName = "等待 Apple Music 音频…"
-                    status = "正在自动录音"
+                    currentFileName = "Waiting for Apple Music audio…"
+                    status = "Recording Automatically"
                 }
             } else {
                 if pausedTrackID == snapshot.trackID {
@@ -110,8 +110,8 @@ struct RecordingSession {
                     pausedTrackID = nil
                     phase = .recording
                     currentFileName = writingTrack?.fileTitle ?? currentFileName
-                    status = "正在自动录音"
-                    actions.append(.log("恢复播放，继续录制：\(track.displayText)"))
+                    status = "Recording Automatically"
+                    actions.append(.log("Playback resumed; continuing recording: \(track.displayText)"))
                 }
                 if restartsForHigherSampleRate,
                    writingTrackID == snapshot.trackID,
@@ -123,23 +123,23 @@ struct RecordingSession {
                     phase = .waitingForRestart
                     actions.append(.restart)
                     actions.append(.finish(completed: false, register: nil))
-                    actions.append(.log("检测到采样率提升（\(writingSampleRate) Hz → \(snapshot.sampleRate) Hz），从头重录"))
+                    actions.append(.log("Sample rate increased (\(writingSampleRate) Hz → \(snapshot.sampleRate) Hz); restarting from the beginning"))
                     writingTrackID = nil
                     writingTrack = nil
                     writingSampleRate = 0
-                    currentFileName = "高解析版本已就绪，从头重录"
-                    status = "正在从头重录高解析版本…"
+                    currentFileName = "Hi-res version ready; restarting from the beginning"
+                    status = "Restarting from the beginning for hi-res audio…"
                     previousPosition = snapshot.position
                     previousDuration = snapshot.duration
                     return actions
                 }
                 if writingTrackID == nil {
                     if skippedTrackID == snapshot.trackID {
-                        currentFileName = "文件夹中已有此歌曲，未重复录制"
-                        status = "歌曲已存在，已跳过"
+                        currentFileName = "Song already exists in the folder; not recorded again"
+                        status = "Song already exists; skipped"
                     } else {
-                        currentFileName = "等待下一首歌曲"
-                        status = "等待下一首自动开始…"
+                        currentFileName = "Waiting for the next song"
+                        status = "Waiting for the next song…"
                     }
                 }
             }
@@ -154,8 +154,8 @@ struct RecordingSession {
                 writingTrack = nil
                 writingSampleRate = 0
                 phase = .completed
-                currentFileName = "完整音轨已保存"
-                status = "等待下一首自动开始…"
+                currentFileName = "Complete track saved"
+                status = "Waiting for the next song…"
             }
             previousPosition = snapshot.position
             previousDuration = snapshot.duration
@@ -176,23 +176,23 @@ struct RecordingSession {
                     pausedTrackID = writingTrackID
                     phase = .paused
                 }
-                currentFileName = pausedTrackID == snapshot.trackID ? "已暂停，恢复后继续" : "暂停期间不写入音频"
-                status = "播放已暂停"
+                currentFileName = pausedTrackID == snapshot.trackID ? "Paused; resumes with playback" : "No audio written while paused"
+                status = "Playback Paused"
             } else {
                 if writingTrackID != nil {
                     actions.append(.finish(completed: false, register: nil))
                     writingTrackID = nil
                     writingTrack = nil
                     writingSampleRate = 0
-                    currentFileName = "录音不完整，已丢弃"
+                    currentFileName = "Incomplete recording discarded"
                 } else {
-                    currentFileName = "等待歌曲开始"
+                    currentFileName = "Waiting for a song to start"
                 }
                 pausedTrackID = nil
                 observedTrackID = nil
                 skippedTrackID = nil
                 phase = .waitingForPlayback
-                status = "等待 Apple Music 播放…"
+                status = "Waiting for Apple Music…"
             }
         }
 

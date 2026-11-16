@@ -6,6 +6,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     var onFileStarted: ((String) -> Void)?
     var onFileFinished: ((URL, RecordingQuality) -> Void)?
     var onError: ((String) -> Void)?
+    var onNotice: ((String) -> Void)?
     var onCaptureStopped: (() -> Void)?
     var onSampleRateChanged: ((Int) -> Void)?
 
@@ -18,6 +19,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     private var captureSampleRate = 48_000
     private var writer: AVAssetWriter?
     private var writerInput: AVAssetWriterInput?
+    private var finalFileURL: URL?
     private var outputDirectory: URL?
     private var trackTitle = "音轨"
     private var trackMetadata: TrackMetadata?
@@ -106,8 +108,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         tap.onError = { [weak self] message in
             self?.report(message)
-            Task {
-                await self?.stop()
+            Task { [weak self] in
+                guard let self else { return }
+                await self.stop()
+                await MainActor.run {
+                    self.onCaptureStopped?()
+                }
+            }
+        }
+        tap.onInterruption = { [weak self] message in
+            self?.reportNotice(message)
+            Task { [weak self] in
+                guard let self else { return }
+                await self.stop()
+                await MainActor.run {
+                    self.onCaptureStopped?()
+                }
             }
         }
         tap.onSampleRateChanged = { [weak self] rate in
@@ -159,7 +175,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.onSampleRateChanged?(rate)
             }
         } catch {
-            report("无法将采集采样率切换为 \(rate) Hz，将继续使用 \(captureSampleRate) Hz。\(captureErrorDetails(error))")
+            report("Could not switch the capture sample rate to \(rate) Hz; continuing at \(captureSampleRate) Hz. \(captureErrorDetails(error))")
         }
     }
 
@@ -294,7 +310,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func startWriterOnQueue(at presentationTime: CMTime) throws {
         guard let outputDirectory else { throw CaptureError.outputDirectoryUnavailable }
-        let url = TrackFileNaming.makeURL(title: trackTitle, directory: outputDirectory)
+        let finalURL: URL
+        if let trackMetadata {
+            finalURL = TrackFileNaming.makeURL(metadata: trackMetadata, directory: outputDirectory)
+            try FileManager.default.createDirectory(
+                at: finalURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } else {
+            finalURL = TrackFileNaming.makeURL(title: trackTitle, directory: outputDirectory)
+        }
+        let url = TrackFileNaming.temporaryURL(for: finalURL)
+        try? FileManager.default.removeItem(at: url)
+        finalFileURL = finalURL
         let writer = try AVAssetWriter(outputURL: url, fileType: .m4a)
         let input = AVAssetWriterInput(
             mediaType: .audio,
@@ -318,7 +346,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         pendingSamples.removeAll()
         quality = RecordingQuality()
 
-        let fileName = url.lastPathComponent
+        let fileName = finalURL.lastPathComponent
         DispatchQueue.main.async {
             self.onFileStarted?(fileName)
         }
@@ -404,9 +432,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         flushRetries: Int = 100,
         completion: @escaping () -> Void
     ) {
-        guard let writer, let url = writer.outputURL as URL? else {
+        guard let writer, let url = writer.outputURL as URL?, let finalURL = finalFileURL else {
             pendingSamples.removeAll()
             quality = RecordingQuality()
+            finalFileURL = nil
             completion()
             return
         }
@@ -419,6 +448,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
                 writerInput = nil
                 writer.cancelWriting()
                 try? FileManager.default.removeItem(at: url)
+                finalFileURL = nil
                 pendingSamples.removeAll()
                 quality = RecordingQuality()
                 report(error.localizedDescription)
@@ -445,7 +475,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         var save = requestedSave
         if save && automaticMode && quality.hasIssues {
             save = false
-            report("检测到音频帧丢失，当前音轨已作为不完整录音删除。")
+            report("Dropped audio frames detected; the current track was deleted as an incomplete recording.")
         }
         let finishedQuality = quality
 
@@ -460,6 +490,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         if !save {
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: url)
+            finalFileURL = nil
             lastSampleEndTime = .invalid
             completion()
             return
@@ -468,6 +499,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         guard writer.status == .writing else {
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: url)
+            finalFileURL = nil
             completion()
             return
         }
@@ -476,11 +508,29 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
             writer.endSession(atSourceTime: lastSampleEndTime)
         }
         lastSampleEndTime = .invalid
+        self.finalFileURL = nil
+        let expectedMetadata = trackMetadata
 
         writer.finishWriting {
             if writer.status == .completed {
-                DispatchQueue.main.async {
-                    self.onFileFinished?(url, finishedQuality)
+                do {
+                    try FileManager.default.moveItem(at: url, to: finalURL)
+                    var completedQuality = finishedQuality
+                    if let expectedMetadata {
+                        let actual = try? LibraryOrganizer.metadata(for: finalURL)
+                        let mismatches = expectedMetadata.readbackMismatches(comparedTo: actual)
+                        if !mismatches.isEmpty {
+                            completedQuality.metadataWarnings = [
+                                "Metadata readback validation failed: \(mismatches.joined(separator: ", "))"
+                            ]
+                        }
+                    }
+                    DispatchQueue.main.async {
+                        self.onFileFinished?(finalURL, completedQuality)
+                    }
+                } catch {
+                    try? FileManager.default.removeItem(at: url)
+                    self.report("Could not save the final audio file: \(error.localizedDescription)")
                 }
             } else {
                 try? FileManager.default.removeItem(at: url)
@@ -507,6 +557,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    private func reportNotice(_ message: String) {
+        DispatchQueue.main.async {
+            self.onNotice?(message)
+        }
+    }
+
     private func report(_ message: String) {
         DispatchQueue.main.async {
             self.onError?(message)
@@ -528,28 +584,28 @@ enum CaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .screenRecordingPermission:
-            return "需要“屏幕与系统音频录制”权限。请在设置列表中启用“Lyrebird”；若未列出，点“＋”添加本应用。授权后用 Cmd+Q 完全退出，再重新打开。"
+            return "Screen & System Audio Recording permission is required. Enable Lyrebird in System Settings; if it is not listed, click + to add it. After granting permission, quit with Cmd+Q and reopen the app."
         case .appleMusicNotRunning:
-            return "未检测到 Apple Music App。请先打开“音乐”并开始播放，再开始录音。"
+            return "Apple Music was not detected. Open Music and start playback before recording."
         case .appleMusicWindowUnavailable:
-            return "无法读取 Apple Music 播放窗口。请保持“音乐”App 打开，再开始录音。"
+            return "Could not read the Apple Music playback window. Keep Music open and start recording again."
         case .displayUnavailable:
-            return "无法读取显示器信息，请检查屏幕录制权限。"
+            return "Could not read display information. Check Screen Recording permission."
         case .outputDirectoryUnavailable:
-            return "无法创建输出文件，请重新选择保存目录。"
+            return "Could not create the output file. Choose the save folder again."
         case .audioInputUnavailable:
-            return "无法初始化音频编码器。"
+            return "Could not initialize the audio encoder."
         case .writerUnavailable:
-            return "音频文件写入失败，请检查磁盘空间和保存目录权限。"
+            return "Could not write the audio file. Check disk space and save folder permissions."
         case .sampleAppendFailed:
-            return "写入音频数据失败，本次录音已停止。"
+            return "Failed to write audio data; recording stopped."
         case .captureStartFailed(let details):
-            return "系统音频捕获启动失败：\(details)"
+            return "Failed to start system audio capture: \(details)"
         }
     }
 }
 
 private func captureErrorDetails(_ error: Error) -> String {
     let nsError = error as NSError
-    return "\(nsError.domain) (\(nsError.code))：\(nsError.localizedDescription)"
+    return "\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)"
 }

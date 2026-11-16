@@ -1,57 +1,31 @@
 from pathlib import Path
 from PIL import Image, ImageDraw
+import subprocess
 
 root = Path(__file__).resolve().parent
 iconset = root / "Resources" / "AppIcon.iconset"
 iconset.mkdir(parents=True, exist_ok=True)
 
 size = 1024
+red = (238, 64, 82, 255)
+white = (255, 255, 255, 255)
 image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 draw = ImageDraw.Draw(image)
-draw.rounded_rectangle((42, 42, 982, 982), radius=220, fill=(238, 64, 82, 255))
+draw.rounded_rectangle((42, 42, 982, 982), radius=220, fill=red)
 
-white = (255, 255, 255, 255)
-red = (238, 64, 82, 255)
+# Two broad, simple tail feathers.
+draw.polygon([(420, 565), (320, 435), (185, 250), (255, 470), (160, 400), (350, 620)], fill=white)
+draw.polygon([(405, 620), (300, 690), (195, 835), (350, 745), (475, 665)], fill=white)
 
+# Faceted body, head and beak.
+draw.polygon([(350, 535), (535, 405), (730, 500), (755, 640), (610, 745),
+              (440, 715), (340, 625)], fill=white)
+draw.polygon([(585, 440), (600, 300), (720, 265), (790, 355), (745, 465)], fill=white)
+draw.polygon([(765, 340), (895, 395), (760, 430)], fill=white)
 
-def bezier(start, control1, control2, end, steps=80):
-    points = []
-    for i in range(steps + 1):
-        t = i / steps
-        u = 1 - t
-        x = u**3 * start[0] + 3 * u**2 * t * control1[0] + 3 * u * t**2 * control2[0] + t**3 * end[0]
-        y = u**3 * start[1] + 3 * u**2 * t * control1[1] + 3 * u * t**2 * control2[1] + t**3 * end[1]
-        points.append((x, y))
-    return points
-
-
-def feather(start, control1, control2, end, inner_start, inner_control1, inner_control2):
-    outer = bezier(start, control1, control2, end)
-    inner = bezier(inner_start, inner_control1, inner_control2, end)
-    return outer + list(reversed(inner))
-
-
-# Two filled, tapered feather shapes instead of stroked lines.
-first = feather(
-    (430, 585), (345, 455), (245, 505), (155, 245),
-    (405, 635), (310, 540), (220, 500)
-)
-second = feather(
-    (450, 610), (360, 520), (265, 650), (190, 800),
-    (420, 665), (330, 580), (235, 680)
-)
-draw.polygon(first, fill=white)
-draw.polygon(second, fill=white)
-
-# Simple body and head.
-draw.ellipse((355, 405, 700, 710), fill=white)
-draw.ellipse((570, 275, 750, 455), fill=white)
-
-# A single curved wing inside the body.
-draw.arc((410, 435, 645, 655), start=195, end=335, fill=red, width=30)
-
-draw.polygon([(730, 350), (850, 390), (733, 420)], fill=white)
-draw.ellipse((672, 340, 692, 360), fill=red)
+# Large polygonal wing opening and diamond eye remain legible at small sizes.
+draw.polygon([(440, 565), (585, 475), (680, 590), (535, 650)], fill=red)
+draw.polygon([(704, 330), (724, 340), (711, 357), (695, 347)], fill=red)
 
 image.save(root / "Resources" / "IconPreview.png")
 
@@ -69,3 +43,8 @@ for name, pixels in [
 ]:
     resized = image.resize((pixels, pixels), Image.Resampling.LANCZOS)
     resized.save(iconset / name)
+
+subprocess.run([
+    "iconutil", "-c", "icns", str(iconset),
+    "-o", str(root / "Resources" / "AppIcon.icns")
+], check=True)

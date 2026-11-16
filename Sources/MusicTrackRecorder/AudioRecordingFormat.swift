@@ -9,7 +9,7 @@ enum AudioRecordingFormat: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .alac: return "ALAC 无损"
+        case .alac: return "ALAC Lossless"
         case .aac: return "AAC 256 kbps"
         }
     }
@@ -23,8 +23,8 @@ enum AudioRecordingFormat: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
-        case .alac: return "无损保存采集音频，文件较大"
-        case .aac: return "有损压缩，文件较小"
+        case .alac: return "Losslessly preserves captured audio; larger files"
+        case .aac: return "Lossy compression; smaller files"
         }
     }
 

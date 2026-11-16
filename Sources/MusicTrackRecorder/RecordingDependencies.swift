@@ -4,6 +4,7 @@ protocol AudioCaptureControlling: AnyObject {
     var onFileStarted: ((String) -> Void)? { get set }
     var onFileFinished: ((URL, RecordingQuality) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
+    var onNotice: ((String) -> Void)? { get set }
     var onCaptureStopped: (() -> Void)? { get set }
     var onSampleRateChanged: ((Int) -> Void)? { get set }
 

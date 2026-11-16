@@ -1,35 +1,36 @@
-# Lyrebird（琴鸟）
+# Lyrebird
 
-Lyrebird 是一款原生 macOS Apple Music 录音工具。它通过 Core Audio Process Tap 获取 Apple Music 解码后的音频，自动识别当前歌曲、按曲目分轨，并将音频、封面和歌曲元数据保存为独立文件。
+Lyrebird is a native macOS menu bar app that records Apple Music playback into separate audio files. It captures the decoded audio stream, identifies each song, embeds metadata and artwork, and saves only recordings that it determines are complete.
 
-![Lyrebird 主界面](docs/images/lyrebird-main-window.png)
+## Features
 
-## 主要功能
+- **Automatic track detection and splitting** — reads the current song, artist, album, playback position, duration, and available sample rate from Apple Music.
+- **Lossless or compact output** — saves ALAC at 24-bit or AAC at 256 kbps in M4A files.
+- **High-resolution recording** — supports 44.1, 48, 88.2, 96, 176.4, and 192 kHz when the source and playback chain provide them.
+- **Metadata and artwork** — embeds the title, artist, album, album artist, year, track number, disc number, and cover art when available. Missing catalog fields can be enriched through high-confidence Apple catalog matches.
+- **Complete recordings only** — uses temporary `.tmp` files while recording and removes incomplete files after an interrupted or aborted session.
+- **Duplicate prevention** — skips songs already present in the save folder and rechecks the folder when files are added or removed.
+- **Pause and resume** — pauses writing with Apple Music and continues the same file when playback resumes, without inserting silence.
+- **Optional high-res restart** — can restart a song once from the beginning if a higher-resolution stream becomes available after playback starts. This option is off by default.
+- **Organized music library** — groups songs into artist and album folders, keeps multi-artist compilations together, and applies track and disc numbers to file names. Invalid file-name characters are replaced safely.
+- **Preview before organizing** — reviews moves and name conflicts before changing existing files, with an option to keep both copies and undo the latest organization.
+- **Menu bar workflow** — shows recording state in the menu bar and remains available after the main window is closed.
+- **English interface and diagnostics** — includes centralized settings, a recording file list, logs, and permission/capture diagnostics.
 
-- 自动识别歌曲名、歌手、专辑和封面。
-- 自动分轨，只保存判定为完整的录音。
-- 支持 ALAC 无损输出（24-bit）和 AAC（256 kbps）。
-- 支持 44.1、48、88.2、96、176.4、192 kHz 输出采样率，实际结果取决于播放链路。
-- 按“歌手 - 歌名”命名文件，重名时自动追加序号。
-- 已有歌曲自动跳过，删除文件后会重新检查目录。
-- 暂停播放时暂停写入，恢复同一首歌后续写原文件，不记录暂停空白。
-- 支持采样率延迟识别、必要时自动回到开头重录。
-- 菜单栏驻留，显示录制状态，关闭主窗口后仍可继续使用。
-- 集中设置窗口、录音日志、权限与采集诊断。
+## Requirements
 
-## 系统要求
+- macOS 13 or later; macOS 14.2 or later is recommended for Core Audio Process Tap capture.
+- The Apple Music app.
+- A Swift 5.9-compatible toolchain and Xcode command-line tools for building from source.
+- An output device that supports the desired sample rate for high-resolution recording.
 
-- macOS 13 或更高版本。
-- 推荐使用 macOS 14.2 或更高版本，以使用 Core Audio Process Tap。
-- Apple Music App。
-- Xcode 或 Swift 命令行工具链，支持 Swift 5.9。
-- 高解析录制需要相应的音源、网络缓冲和输出设备支持；USB DAC 可能需要单独设置输出格式。
+On older supported systems, Lyrebird can fall back to ScreenCaptureKit audio capture.
 
-旧版 macOS 可回退到 ScreenCaptureKit 音频捕获，但其行为与 Process Tap 不完全相同。
+## Quick Start
 
-## 构建与安装
+### 1. Build and install
 
-在项目根目录执行：
+From the project directory:
 
 ```bash
 chmod +x setup_local_signing.sh build_app.sh
@@ -39,100 +40,63 @@ ditto dist/Lyrebird.app /Applications/Lyrebird.app
 open /Applications/Lyrebird.app
 ```
 
-构建产物：
+The build script creates:
 
 - `dist/Lyrebird.app`
 - `dist/Lyrebird.zip`
 
-`setup_local_signing.sh` 会创建本地签名身份。使用固定的本地签名有助于升级应用后保留系统授权。`Signing/` 中的钥匙串、证书和密码不纳入 Git 版本控制；如果该目录不存在，构建脚本会退回到临时签名。
+`setup_local_signing.sh` creates a persistent local signing identity. Using the same identity across upgrades helps macOS retain permissions. Local keys, certificates, and passwords are excluded from Git. If no local signing identity is configured, the build script uses ad hoc signing.
 
-## 权限
+### 2. Grant permissions
 
-根据系统和采集方式，首次使用时可能需要：
+macOS may request one or more of the following permissions:
 
-1. **自动化权限**：读取 Apple Music 当前歌曲、播放位置、时长和采样率，并控制播放、暂停及回卷。
-2. **屏幕与系统音频录制权限**：用于 ScreenCaptureKit 回退路径，不保存屏幕画面。
-3. **系统音频采集权限**：用于 Core Audio Process Tap。
+- **Automation** — reads Apple Music track information and controls playback when a restart is required.
+- **Screen & System Audio Recording** — used by the ScreenCaptureKit fallback; Lyrebird does not save screen images.
+- **System audio capture** — used for Core Audio Process Tap recording.
 
-如果授权后仍提示权限不足，请使用 Cmd＋Q 完全退出应用，再重新打开。也可在设置窗口运行“采集诊断”。
+If recording still reports a permission error after access is granted, quit Lyrebird completely with **Cmd+Q** and reopen it. **Settings → Capture Diagnostics** can help identify the failing stage.
 
-## 使用方法
+### 3. Configure recording
 
-1. 在“设置”中选择保存目录、编码格式和录制模式。
-2. 点击录制按钮。即使 Apple Music 尚未播放，应用也会等待播放。
-3. 自动模式下，应用识别歌曲后创建文件，并在歌曲完整结束时保存。
-4. 播放中暂停只会暂停写入；恢复同一首歌后继续录制。
-5. 切歌、停止播放或手动停止时，未达到完整条件的文件会被丢弃。
-6. 点击菜单栏小鸟图标，可在主窗口关闭后继续打开录音面板。
+Open the gear menu and choose **Settings**:
 
-### 高解析重录
+- Select **Automatic Split** or **Manual** mode.
+- Choose **ALAC · 24-bit** or **AAC · 256 kbps**.
+- Select the save folder.
+- Optionally enable **Restart from Beginning for Hi-Res Audio**.
 
-“高解析重录”默认关闭，避免打断正常听歌。开启后，如果同一首歌的源采样率从较低值提升到高解析格式，应用会删除尚未完成的低采样率录音，并自动回到开头重录一次。
+### 4. Record
 
-如果歌曲开始时采样率暂时未知，应用会等待有效信息；确认过晚时，也可能自动回到开头，避免生成错误格式或残缺文件。
+1. Click **Start Recording** in the Lyrebird panel.
+2. Start playback in Apple Music. Lyrebird can wait if music is not playing yet.
+3. In automatic mode, Lyrebird detects the song, creates a temporary file, and saves the final M4A after a complete recording.
+4. Use the square **Stop Recording** button to stop. Incomplete automatic recordings are discarded.
 
-### 音频 MIDI 设置
+Use **Recordings** to inspect saved files and **View Logs** to review completed recordings, skipped songs, warnings, and errors.
 
-高解析录制不仅取决于编码设置，还取决于整条输出链路。可在 macOS“音频 MIDI 设置”中选择实际输出设备并设置其格式，例如 96,000 Hz 或 192,000 Hz。
+### 5. Organize an existing library
 
-如果输出设备只支持 48 kHz，生成更高采样率的文件也不会增加原始音频细节。
+Choose **Settings → Organize Songs…** to preview how recordings will be grouped and renamed. Nothing moves until the preview is confirmed. Conflicting files are never overwritten; they can be skipped or kept with a numeric suffix. The latest organization can be undone when the original locations are still available.
 
-## 测试
+## Audio Quality Notes
 
-运行全部单元测试：
+Lyrebird records Apple Music's **decoded audio stream**, not a direct copy of the original store file. ALAC preserves the captured stream without additional lossy compression, but a 24-bit output file does not prove that the source was 24-bit or that the recording is bit-perfect.
+
+The available sample rate depends on the source, network buffering, Apple Music's stream selection, and the current output device. Raising the output sample rate cannot add detail missing from the source. For high-resolution playback, configure the actual output device in macOS **Audio MIDI Setup**; a USB DAC may need an explicit 96 kHz or 192 kHz output format.
+
+Apple Music may begin with a lower-rate stream and switch to a higher-rate stream after buffering. The optional high-res restart handles this by discarding the incomplete lower-rate recording and restarting once from the beginning. Leave it disabled if uninterrupted listening is more important.
+
+## Tests
+
+Run the full test suite with:
 
 ```bash
 swift test
 ```
 
-当前测试覆盖编码、元数据、文件命名、去重、录制完整性、暂停相关时间处理、设置持久化和滚动文字等。
+The tests cover encoding, metadata, file naming, duplicate detection, recording completeness, pause/resume behavior, settings persistence, and library organization.
 
-应用还提供真机诊断入口：
+## Usage Boundary
 
-```bash
-/Applications/Lyrebird.app/Contents/MacOS/Lyrebird \
-  --run-automatic-format-probe \
-  --diagnostic-output /tmp/lyrebird-format.txt
-
-/Applications/Lyrebird.app/Contents/MacOS/Lyrebird \
-  --run-viewmodel-pause-probe \
-  --diagnostic-output /tmp/lyrebird-pause.txt
-
-/Applications/Lyrebird.app/Contents/MacOS/Lyrebird \
-  --run-output-directory-probe \
-  --diagnostic-output /tmp/lyrebird-directory.txt
-
-/Applications/Lyrebird.app/Contents/MacOS/Lyrebird \
-  --run-waiting-probe \
-  --diagnostic-output /tmp/lyrebird-waiting.txt
-```
-
-诊断会使用 Apple Music 播放、暂停或回卷，并在结束后暂停播放。请使用独立测试目录，避免与正式录音混淆。
-
-## 项目结构
-
-```text
-Package.swift                     Swift Package 配置
-Sources/MusicTrackRecorder/       应用、录音引擎、Apple Music 自动化和界面
-Tests/MusicTrackRecorderTests/    单元测试
-Resources/                        应用配置和图标资源
-build_app.sh                      构建、签名和打包脚本
-setup_local_signing.sh            本地签名配置脚本
-generate_icon.py                  应用图标生成脚本
-generate_menubar_icons.py         菜单栏小鸟帧图生成脚本
-diagnostics/                      本地诊断产物（不纳入 Git）
-dist/                             构建产物（不纳入 Git）
-Signing/                          本地签名材料（不纳入 Git）
-```
-
-## 音质与格式说明
-
-- 录制的是 Apple Music **解码后的音频流**，不是对原始商店文件的直接复制。
-- ALAC 输出位深为 24-bit；这不代表源文件一定是 24-bit，也不保证 bit-perfect。
-- AAC 是有损编码，界面显示其码率而不是固定 PCM 位深。
-- 提高输出采样率或位深不会凭空增加音源细节。
-- Apple Music 可能先使用较低格式快速起播，待网络和设备条件就绪后再切换到高解析格式。
-
-## 使用边界
-
-请仅在适用法律、版权要求及 Apple Music 服务条款允许的范围内使用本工具。不要用于未经授权的复制、分发或规避版权管理。
+Use Lyrebird only where permitted by applicable law, copyright requirements, and the Apple Music terms of service. Do not use it for unauthorized copying, distribution, or circumvention of rights management.

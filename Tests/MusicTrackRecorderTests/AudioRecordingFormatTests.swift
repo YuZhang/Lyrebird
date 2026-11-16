@@ -86,6 +86,14 @@ final class AudioRecordingFormatTests: XCTestCase {
         let artwork = metadata.first { $0.commonKey == .commonKeyArtwork }?.value as? NSData
         XCTAssertEqual(title, "编码测试")
         XCTAssertNotNil(artwork)
+        let organizedMetadata = try LibraryOrganizer.metadata(for: output)
+        XCTAssertEqual(organizedMetadata.title, testMetadata.title)
+        XCTAssertEqual(organizedMetadata.artist, testMetadata.artist)
+        XCTAssertEqual(organizedMetadata.album, testMetadata.album)
+        XCTAssertEqual(organizedMetadata.albumArtist, testMetadata.albumArtist)
+        XCTAssertEqual(organizedMetadata.year, testMetadata.year)
+        XCTAssertEqual(organizedMetadata.trackNumber, testMetadata.trackNumber)
+        XCTAssertEqual(organizedMetadata.discNumber, testMetadata.discNumber)
         XCTAssertGreaterThan(try Data(contentsOf: output).count, 1_000)
 
         let info = try await RecordingQualityReport.info(url: output)

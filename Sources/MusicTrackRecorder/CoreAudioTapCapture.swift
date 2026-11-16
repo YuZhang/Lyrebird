@@ -6,6 +6,7 @@ import CoreMedia
 protocol CoreAudioTapCapturing: AnyObject {
     var onSampleBuffer: ((CMSampleBuffer) -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
+    var onInterruption: ((String) -> Void)? { get set }
     var onSampleRateChanged: ((Int) -> Void)? { get set }
 
     func start(sampleRate: Int) async throws
@@ -17,6 +18,7 @@ protocol CoreAudioTapCapturing: AnyObject {
 final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
     var onSampleBuffer: ((CMSampleBuffer) -> Void)?
     var onError: ((String) -> Void)?
+    var onInterruption: ((String) -> Void)?
     var onSampleRateChanged: ((Int) -> Void)?
 
     private let queue = DispatchQueue(label: "com.kimi.MusicTrackRecorder.coreaudio-tap")
@@ -26,8 +28,18 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
     private var format = AudioStreamBasicDescription()
     private var nextPresentationTime = CMTime.invalid
     private var isRunning = false
+    private var outputDeviceID = AudioObjectID(kAudioObjectUnknown)
+    private var defaultOutputListener: AudioObjectPropertyListenerBlock?
+    private var outputRateListener: AudioObjectPropertyListenerBlock?
+    private var devicesListener: AudioObjectPropertyListenerBlock?
+    private var tapFormatListener: AudioObjectPropertyListenerBlock?
 
     func start(sampleRate: Int) async throws {
+        outputDeviceID = try getProperty(
+            AudioObjectID(kAudioObjectSystemObject),
+            kAudioHardwarePropertyDefaultOutputDevice,
+            AudioObjectID.self
+        )
         let process = try await findAppleMusicProcess()
         let description = CATapDescription(stereoMixdownOfProcesses: [process])
         description.isPrivate = true
@@ -49,15 +61,16 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
             self?.process(input)
         }
         guard status == noErr, let procID else {
-            throw TapCaptureError.api(status, "创建音频回调失败")
+            throw TapCaptureError.api(status, "Failed to create the audio callback")
         }
         ioProcID = procID
 
         let startStatus = AudioDeviceStart(aggregateID, procID)
         guard startStatus == noErr else {
-            throw TapCaptureError.api(startStatus, "启动音频捕获失败")
+            throw TapCaptureError.api(startStatus, "Failed to start audio capture")
         }
         isRunning = true
+        try installDisruptionListeners()
     }
 
     func updateSampleRate(_ rate: Int) async {
@@ -72,6 +85,7 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
     }
 
     func stop() async {
+        removeDisruptionListeners()
         if let ioProcID {
             AudioDeviceStop(aggregateID, ioProcID)
             AudioDeviceDestroyIOProcID(aggregateID, ioProcID)
@@ -88,11 +102,87 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
         isRunning = false
     }
 
+    private func installDisruptionListeners() throws {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        defaultOutputListener = try addListener(system, kAudioHardwarePropertyDefaultOutputDevice) { [weak self] _, _ in
+            self?.onInterruption?("The default output device changed. Stopped and discarded the incomplete recording.")
+        }
+        outputRateListener = try addListener(outputDeviceID, kAudioDevicePropertyNominalSampleRate) { [weak self] _, _ in
+            self?.onInterruption?("The output device sample rate changed. Stopped and discarded the incomplete recording.")
+        }
+        devicesListener = try addListener(system, kAudioHardwarePropertyDevices) { [weak self] _, _ in
+            self?.checkOutputDevicePresence()
+        }
+        tapFormatListener = try addListener(tapID, kAudioTapPropertyFormat) { [weak self] _, _ in
+            self?.checkTapFormat()
+        }
+    }
+
+    private func addListener(
+        _ object: AudioObjectID,
+        _ selector: AudioObjectPropertySelector,
+        _ handler: @escaping AudioObjectPropertyListenerBlock
+    ) throws -> AudioObjectPropertyListenerBlock {
+        var address = propertyAddress(selector)
+        let status = AudioObjectAddPropertyListenerBlock(object, &address, nil, handler)
+        guard status == noErr else {
+            throw TapCaptureError.api(status, "Failed to listen for audio device changes")
+        }
+        return handler
+    }
+
+    private func removeDisruptionListeners() {
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        if let defaultOutputListener {
+            removeListener(system, kAudioHardwarePropertyDefaultOutputDevice, defaultOutputListener)
+            self.defaultOutputListener = nil
+        }
+        if let outputRateListener, outputDeviceID != kAudioObjectUnknown {
+            removeListener(outputDeviceID, kAudioDevicePropertyNominalSampleRate, outputRateListener)
+            self.outputRateListener = nil
+        }
+        if let devicesListener {
+            removeListener(system, kAudioHardwarePropertyDevices, devicesListener)
+            self.devicesListener = nil
+        }
+        if let tapFormatListener, tapID != kAudioObjectUnknown {
+            removeListener(tapID, kAudioTapPropertyFormat, tapFormatListener)
+            self.tapFormatListener = nil
+        }
+    }
+
+    private func removeListener(
+        _ object: AudioObjectID,
+        _ selector: AudioObjectPropertySelector,
+        _ handler: @escaping AudioObjectPropertyListenerBlock
+    ) {
+        var address = propertyAddress(selector)
+        AudioObjectRemovePropertyListenerBlock(object, &address, nil, handler)
+    }
+
+    private func checkOutputDevicePresence() {
+        guard let devices = try? getElements(
+            AudioObjectID(kAudioObjectSystemObject),
+            kAudioHardwarePropertyDevices,
+            AudioObjectID.self
+        ), !devices.contains(outputDeviceID) else { return }
+        onInterruption?("The current output device disconnected. Stopped and discarded the incomplete recording.")
+    }
+
+    private func checkTapFormat() {
+        guard let updated = try? getProperty(
+            tapID,
+            kAudioTapPropertyFormat,
+            AudioStreamBasicDescription.self
+        ), Int(updated.mSampleRate) != Int(format.mSampleRate) else { return }
+        onInterruption?("The audio stream format changed. Stopped and discarded the incomplete recording.")
+    }
+
     private func create(description: CATapDescription) throws -> AudioObjectID {
         var id = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(description, &id)
         guard status == noErr else {
-            throw TapCaptureError.api(status, "创建 Process Tap 失败")
+            throw TapCaptureError.api(status, "Failed to create the process tap")
         }
         return id
     }
@@ -109,7 +199,7 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
         var id = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateAggregateDevice(properties as CFDictionary, &id)
         guard status == noErr else {
-            throw TapCaptureError.api(status, "创建聚合音频设备失败")
+            throw TapCaptureError.api(status, "Failed to create the aggregate audio device")
         }
         return id
     }
@@ -160,7 +250,7 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
         defer { value.deallocate() }
         let status = AudioObjectGetPropertyData(object, &address, 0, nil, &size, value)
         guard status == noErr else {
-            throw TapCaptureError.api(status, "读取音频属性失败 \(selector)")
+            throw TapCaptureError.api(status, "Failed to read audio property \(selector)")
         }
         return value.pointee
     }
@@ -174,14 +264,14 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
         var size: UInt32 = 0
         var status = AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size)
         guard status == noErr else {
-            throw TapCaptureError.api(status, "读取音频属性大小失败 \(selector)")
+            throw TapCaptureError.api(status, "Failed to read audio property size \(selector)")
         }
         let count = Int(size) / MemoryLayout<T>.stride
         let values = UnsafeMutablePointer<T>.allocate(capacity: max(count, 1))
         defer { values.deallocate() }
         status = AudioObjectGetPropertyData(object, &address, 0, nil, &size, values)
         guard status == noErr else {
-            throw TapCaptureError.api(status, "读取音频属性列表失败 \(selector)")
+            throw TapCaptureError.api(status, "Failed to read audio property list \(selector)")
         }
         return Array(UnsafeBufferPointer(start: values, count: count))
     }
@@ -201,7 +291,7 @@ final class CoreAudioTapCapture: NSObject, CoreAudioTapCapturing {
             value
         )
         guard status == noErr else {
-            throw TapCaptureError.api(status, "设置音频属性失败 \(selector)")
+            throw TapCaptureError.api(status, "Failed to set audio property \(selector)")
         }
     }
 
@@ -342,9 +432,9 @@ private enum TapCaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .api(let status, let message):
-            return "\(message)（OSStatus \(status)）"
+            return "\(message) (OSStatus \(status))"
         case .musicUnavailable:
-            return "未找到正在输出音频的 Apple Music 进程，请先播放歌曲。"
+            return "No Apple Music process currently outputting audio was found. Start playback first."
         }
     }
 }

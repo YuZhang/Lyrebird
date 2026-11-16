@@ -5,7 +5,7 @@ final class RecordingQualityTests: XCTestCase {
     func testCleanRecordingHasNoIssues() {
         let quality = RecordingQuality(writtenFrames: 48_000)
         XCTAssertFalse(quality.hasIssues)
-        XCTAssertTrue(quality.summary.contains("未检测到"))
+        XCTAssertTrue(quality.summary.contains("No dropped frames"))
     }
 
     func testDroppedSamplesAreReported() {
@@ -16,7 +16,7 @@ final class RecordingQualityTests: XCTestCase {
             writtenFrames: 47_000
         )
         XCTAssertTrue(quality.hasIssues)
-        XCTAssertTrue(quality.summary.contains("1 个音频包"))
-        XCTAssertTrue(quality.summary.contains("1024 帧"))
+        XCTAssertTrue(quality.summary.contains("1 audio buffer"))
+        XCTAssertTrue(quality.summary.contains("1024 frames"))
     }
 }

@@ -8,8 +8,8 @@ final class RecordingProbe {
         requestedRate: Int? = nil
     ) async -> String {
         var lines = [
-            "Lyrebird 真实采集测试",
-            adaptiveSampleRate ? "测试时长：6 秒（验证采集、采样率与封面状态）" : "测试时长：3 秒（仅验证采集与 ALAC 编码）"
+            "Lyrebird Live Capture Test",
+            adaptiveSampleRate ? "Duration: 6 seconds (capture, sample rate, and artwork)" : "Duration: 3 seconds (capture and ALAC encoding only)"
         ]
         let engine = AudioCaptureEngine()
         var finishedURL: URL?
@@ -20,7 +20,7 @@ final class RecordingProbe {
             finishedQuality = quality
         }
         engine.onSampleRateChanged = { rate in
-            lines.append("Tap 实际输出采样率：\(rate) Hz")
+            lines.append("Actual tap output sample rate: \(rate) Hz")
         }
 
         do {
@@ -30,19 +30,19 @@ final class RecordingProbe {
 
             try await engine.start(
                 outputDirectory: outputDirectory,
-                title: "真机采集测试",
+                title: "Live Capture Test",
                 automatic: adaptiveSampleRate,
                 format: .alac
             )
-            lines.append("音频流启动：成功")
+            lines.append("Audio stream startup: Succeeded")
 
             if adaptiveSampleRate {
                 let snapshot = try await waitForPlayingSnapshot()
-                lines.append("读取源采样率：\(snapshot.sampleRate > 0 ? "\(snapshot.sampleRate) Hz" : "未知，使用 48000 Hz")")
+                lines.append("Source sample rate: \(snapshot.sampleRate > 0 ? "\(snapshot.sampleRate) Hz" : "Unknown; using 48000 Hz")")
                 let targetRate = requestedRate ?? snapshot.sampleRate
-                lines.append("请求采集采样率：\(targetRate) Hz")
+                lines.append("Requested capture sample rate: \(targetRate) Hz")
                 await engine.updateSampleRate(targetRate)
-                await engine.beginTrack(title: "真机采样率测试", metadata: snapshot.track)
+                await engine.beginTrack(title: "Live Sample Rate Test", metadata: snapshot.track)
             }
 
             try await Task.sleep(nanoseconds: adaptiveSampleRate ? 6_000_000_000 : 3_000_000_000)
@@ -53,30 +53,30 @@ final class RecordingProbe {
             try await Task.sleep(nanoseconds: 100_000_000)
 
             guard let finishedURL else {
-                lines.append("文件生成：失败（未收到完成文件）")
+                lines.append("File generation: Failed (no completed file received)")
                 return lines.joined(separator: "\n")
             }
 
             let asset = AVAsset(url: finishedURL)
             guard let track = asset.tracks(withMediaType: .audio).first,
                   !track.formatDescriptions.isEmpty else {
-                lines.append("文件验证：失败（没有音轨）")
+                lines.append("File validation: Failed (no audio track)")
                 return lines.joined(separator: "\n")
             }
             let description = track.formatDescriptions[0] as! CMAudioFormatDescription
             let subtype = CMFormatDescriptionGetMediaSubType(description)
-            lines.append("文件生成：成功")
-            lines.append("编码验证：\(subtype == kAudioFormatAppleLossless ? "ALAC" : "其他（\(subtype)）")")
-            lines.append("文件时长：\(String(format: "%.3f", asset.duration.seconds)) 秒")
-            lines.append("文件大小：\(try Data(contentsOf: finishedURL).count) 字节")
+            lines.append("File generation: Succeeded")
+            lines.append("Codec validation: \(subtype == kAudioFormatAppleLossless ? "ALAC" : "Other (\(subtype))")")
+            lines.append("File duration: \(String(format: "%.3f", asset.duration.seconds)) seconds")
+            lines.append("File size: \(try Data(contentsOf: finishedURL).count) bytes")
             if let finishedQuality {
-                lines.append("写入质量：\(finishedQuality.summary)")
+                lines.append("Write quality: \(finishedQuality.summary)")
             }
-            lines.append("文件路径：\(finishedURL.path)")
+            lines.append("File path: \(finishedURL.path)")
         } catch {
             await engine.stop()
             try? controlMusic("pause")
-            lines.append("测试失败：\(PermissionDiagnosticRunner.errorDetails(error))")
+            lines.append("Test failed: \(PermissionDiagnosticRunner.errorDetails(error))")
         }
         return lines.joined(separator: "\n")
     }
@@ -90,7 +90,7 @@ final class RecordingProbe {
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        throw MusicAutomationError.readFailed("Apple Music 未在预期时间内开始播放。")
+        throw MusicAutomationError.readFailed("Apple Music did not start playing within the expected time.")
     }
 
     private func playMusic() throws {
@@ -106,7 +106,7 @@ final class RecordingProbe {
         """)
         _ = script?.executeAndReturnError(&errorInfo)
         if let errorInfo {
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "无法播放 Apple Music 曲目。"
+            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Could not play an Apple Music track."
             throw MusicAutomationError.readFailed(message)
         }
     }
@@ -116,7 +116,7 @@ final class RecordingProbe {
         let script = NSAppleScript(source: "tell application \"Music\" to \(command)")
         _ = script?.executeAndReturnError(&errorInfo)
         if let errorInfo {
-            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "无法控制 Apple Music。"
+            let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Could not control Apple Music."
             throw MusicAutomationError.readFailed(message)
         }
     }

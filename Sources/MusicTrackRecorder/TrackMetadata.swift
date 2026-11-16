@@ -59,6 +59,47 @@ struct TrackMetadata: Equatable {
         }
     }
 
+    var needsCatalogEnrichment: Bool {
+        year <= 0 || trackNumber <= 0 || discNumber <= 0
+    }
+
+    func readbackMismatches(comparedTo actual: TrackMetadata?) -> [String] {
+        guard let actual else { return ["All track metadata"] }
+        var fields: [String] = []
+        if !title.isEmpty, actual.title != title { fields.append("Title") }
+        if !artist.isEmpty, actual.artist != artist { fields.append("Artist") }
+        if !album.isEmpty, actual.album != album { fields.append("Album") }
+        if !albumArtist.isEmpty, actual.albumArtist != albumArtist { fields.append("Album artist") }
+        if year > 0, actual.year != year { fields.append("Year") }
+        if trackNumber > 0, actual.trackNumber != trackNumber { fields.append("Track number") }
+        if discNumber > 0, actual.discNumber != discNumber { fields.append("Disc number") }
+        return fields
+    }
+
+    var isCompilation: Bool {
+        let value = albumArtist.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["various artists", "various artist", "various", "v.a.", "va", "群星", "合集", "合辑"].contains(value)
+    }
+
+    func applyingCatalogMetadata(
+        year catalogYear: Int,
+        trackNumber catalogTrackNumber: Int,
+        discNumber catalogDiscNumber: Int
+    ) -> TrackMetadata {
+        TrackMetadata(
+            title: title,
+            artist: artist,
+            albumArtist: albumArtist,
+            album: album,
+            genre: genre,
+            composer: composer,
+            year: year > 0 ? year : catalogYear,
+            trackNumber: trackNumber > 0 ? trackNumber : catalogTrackNumber,
+            discNumber: discNumber > 0 ? discNumber : catalogDiscNumber,
+            artworkData: artworkData
+        )
+    }
+
     func withArtwork(_ data: Data?) -> TrackMetadata {
         TrackMetadata(
             title: title,
@@ -87,10 +128,18 @@ struct TrackMetadata: Equatable {
             appendITunes(.iTunesMetadataKeyReleaseDate, value: String(year), to: &items)
         }
         if trackNumber > 0 {
-            appendITunes(.iTunesMetadataKeyTrackNumber, value: String(trackNumber), to: &items)
+            appendITunesNumber(
+                .iTunesMetadataKeyTrackNumber,
+                data: Data([0, 0, highByte(trackNumber), lowByte(trackNumber), 0, 0, 0, 0]),
+                to: &items
+            )
         }
         if discNumber > 0 {
-            appendITunes(.iTunesMetadataKeyDiscNumber, value: String(discNumber), to: &items)
+            appendITunesNumber(
+                .iTunesMetadataKeyDiscNumber,
+                data: Data([0, 0, highByte(discNumber), lowByte(discNumber), 0, 0]),
+                to: &items
+            )
         }
         appendArtwork(to: &items)
         return items
@@ -118,8 +167,30 @@ struct TrackMetadata: Equatable {
         let item = AVMutableMetadataItem()
         item.keySpace = .iTunes
         item.key = key as NSString
+        item.dataType = kCMMetadataBaseDataType_UTF8 as String
         item.value = value as NSString
         items.append(item)
+    }
+
+    private func appendITunesNumber(
+        _ key: AVMetadataKey,
+        data: Data,
+        to items: inout [AVMetadataItem]
+    ) {
+        let item = AVMutableMetadataItem()
+        item.keySpace = .iTunes
+        item.key = key as NSString
+        item.dataType = kCMMetadataBaseDataType_RawData as String
+        item.value = data as NSData
+        items.append(item)
+    }
+
+    private func highByte(_ value: Int) -> UInt8 {
+        UInt8((UInt16(clamping: value) >> 8) & 0xFF)
+    }
+
+    private func lowByte(_ value: Int) -> UInt8 {
+        UInt8(UInt16(clamping: value) & 0xFF)
     }
 
     private func appendArtwork(to items: inout [AVMetadataItem]) {
