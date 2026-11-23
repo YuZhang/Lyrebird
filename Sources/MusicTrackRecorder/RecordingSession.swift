@@ -199,3 +199,13 @@ struct RecordingSession {
         return actions
     }
 }
+
+enum RecordingPollPolicy {
+    static func nanoseconds(for snapshot: MusicPlayerSnapshot, phase: RecordingSession.Phase) -> UInt64 {
+        guard snapshot.state == .playing, phase == .recording, snapshot.duration > 0 else {
+            return 200_000_000
+        }
+        let isStable = snapshot.position >= 3 && snapshot.duration - snapshot.position >= 3
+        return isStable ? 1_000_000_000 : 200_000_000
+    }
+}

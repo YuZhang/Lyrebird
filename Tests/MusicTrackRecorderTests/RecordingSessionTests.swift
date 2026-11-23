@@ -82,6 +82,20 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertEqual(session.phase, .recording)
     }
 
+    func testStablePlaybackUsesSlowerPolling() {
+        let current = snapshot(rate: 48_000, position: 10)
+        XCTAssertEqual(RecordingPollPolicy.nanoseconds(for: current, phase: .recording), 1_000_000_000)
+    }
+
+    func testTrackBoundariesAndTransitionsKeepFastPolling() {
+        let beginning = snapshot(rate: 48_000, position: 0.2)
+        let ending = snapshot(rate: 48_000, position: 178)
+        let stable = snapshot(rate: 48_000, position: 10)
+        XCTAssertEqual(RecordingPollPolicy.nanoseconds(for: beginning, phase: .recording), 200_000_000)
+        XCTAssertEqual(RecordingPollPolicy.nanoseconds(for: ending, phase: .recording), 200_000_000)
+        XCTAssertEqual(RecordingPollPolicy.nanoseconds(for: stable, phase: .waitingForRestart), 200_000_000)
+    }
+
     private func snapshot(
         state: MusicPlayerSnapshot.State = .playing,
         id: String = "track",
@@ -165,6 +179,19 @@ final class InjectedRecordingTests: XCTestCase {
         XCTAssertTrue(model.logEvents.contains { $0.message == message })
     }
 
+    func testPanelVisibilityControlsIdleRefresh() async {
+        let engine = FakeCaptureEngine()
+        let automation = FakeMusicAutomation(snapshot: injectedSnapshot(rate: 48_000))
+        let model = makeModel(engine: engine, automation: automation)
+        model.setPanelVisible(false)
+        model.updateElapsed()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(automation.snapshotCalls, 0)
+
+        model.setPanelVisible(true)
+        await assertEventually { automation.snapshotCalls > 0 }
+    }
+
     private func makeModel(engine: FakeCaptureEngine, automation: FakeMusicAutomation) -> RecorderViewModel {
         let model = RecorderViewModel(engine: engine, musicAutomation: automation)
         model.outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("Lyrebird Tests \(UUID().uuidString)", isDirectory: true)
@@ -214,6 +241,7 @@ private final class FakeCaptureEngine: AudioCaptureControlling {
 private final class FakeMusicAutomation: MusicAutomationControlling {
     var currentSnapshot: MusicPlayerSnapshot
     var restartCount = 0
+    var snapshotCalls = 0
     var pauseAfterRestart = false
 
     init(snapshot: MusicPlayerSnapshot) {
@@ -221,7 +249,8 @@ private final class FakeMusicAutomation: MusicAutomationControlling {
     }
 
     func snapshot(includeArtwork: Bool) async throws -> MusicPlayerSnapshot {
-        currentSnapshot
+        snapshotCalls += 1
+        return currentSnapshot
     }
 
     func restartCurrentTrack() async throws {

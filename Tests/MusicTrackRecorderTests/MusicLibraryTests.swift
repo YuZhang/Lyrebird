@@ -182,4 +182,42 @@ final class MusicLibraryTests: XCTestCase {
         let contains = await library.contains(other)
         XCTAssertFalse(contains)
     }
+
+    func testIncrementalRefreshAddsAndRemovesFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let firstFile = directory.appendingPathComponent("\(track.fileTitle).m4a")
+        FileManager.default.createFile(atPath: firstFile.path, contents: Data())
+        let library = MusicLibrary()
+        await library.prepare(in: directory)
+
+        let other = TrackMetadata(
+            title: "Another Song",
+            artist: "Another Artist",
+            albumArtist: "Another Artist",
+            album: "Another Album",
+            genre: "",
+            composer: "",
+            year: 2026,
+            trackNumber: 1,
+            discNumber: 1
+        )
+        let secondFile = directory.appendingPathComponent("\(other.fileTitle).m4a")
+        FileManager.default.createFile(atPath: secondFile.path, contents: Data())
+        await library.refreshIfNeeded(in: directory)
+        var firstExists = await library.contains(track)
+        var secondExists = await library.contains(other)
+        XCTAssertTrue(firstExists)
+        XCTAssertTrue(secondExists)
+
+        try FileManager.default.removeItem(at: firstFile)
+        await library.refreshIfNeeded(in: directory)
+        firstExists = await library.contains(track)
+        secondExists = await library.contains(other)
+        XCTAssertFalse(firstExists)
+        XCTAssertTrue(secondExists)
+    }
 }

@@ -8,6 +8,7 @@ struct MarqueeText: View {
     let weight: NSFont.Weight
     let color: Color
     let height: CGFloat
+    var isActive: Bool = true
 
     @State private var startedAt = Date()
     private static let gap: CGFloat = 28
@@ -15,31 +16,25 @@ struct MarqueeText: View {
 
     var body: some View {
         GeometryReader { proxy in
-            TimelineView(.animation) { timeline in
-                let textWidth = measure(text)
-                let overflows = Self.overflows(textWidth: textWidth, containerWidth: proxy.size.width)
+            let textWidth = measure(text)
+            let overflows = Self.overflows(textWidth: textWidth, containerWidth: proxy.size.width)
 
-                HStack(spacing: Self.gap) {
-                    Text(text)
-                    if overflows {
-                        Text(text)
-                            .accessibilityHidden(true)
-                    }
+            if overflows && isActive {
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { timeline in
+                    textContent(
+                        textWidth: textWidth,
+                        containerWidth: proxy.size.width,
+                        elapsed: timeline.date.timeIntervalSince(startedAt)
+                    )
                 }
-                .font(font)
-                .foregroundStyle(color)
-                .fixedSize(horizontal: true, vertical: false)
-                .offset(x: Self.offset(
-                    textWidth: textWidth,
-                    containerWidth: proxy.size.width,
-                    elapsed: timeline.date.timeIntervalSince(startedAt)
-                ))
-            }
-            .onChange(of: text) { _ in
-                startedAt = Date()
-            }
-            .onChange(of: proxy.size.width) { _ in
-                startedAt = Date()
+                .onChange(of: proxy.size.width) { _ in
+                    startedAt = Date()
+                }
+            } else {
+                textContent(textWidth: textWidth, containerWidth: proxy.size.width, elapsed: 0)
+                    .onChange(of: proxy.size.width) { _ in
+                        startedAt = Date()
+                    }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -47,6 +42,34 @@ struct MarqueeText: View {
         .clipped()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
+        .onChange(of: text) { _ in
+            startedAt = Date()
+        }
+        .onChange(of: isActive) { active in
+            if active { startedAt = Date() }
+        }
+    }
+
+    private func textContent(
+        textWidth: CGFloat,
+        containerWidth: CGFloat,
+        elapsed: TimeInterval
+    ) -> some View {
+        HStack(spacing: Self.gap) {
+            Text(text)
+            if Self.overflows(textWidth: textWidth, containerWidth: containerWidth) {
+                Text(text)
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(font)
+        .foregroundStyle(color)
+        .fixedSize(horizontal: true, vertical: false)
+        .offset(x: Self.offset(
+            textWidth: textWidth,
+            containerWidth: containerWidth,
+            elapsed: elapsed
+        ))
     }
 
     static func overflows(textWidth: CGFloat, containerWidth: CGFloat) -> Bool {

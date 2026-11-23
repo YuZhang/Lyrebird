@@ -44,6 +44,7 @@ struct LogEvent: Identifiable, Equatable {
 final class RecorderViewModel: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var isBusy = false
+    @Published private(set) var isPanelVisible = false
     @Published private(set) var status = "Ready"
     @Published private(set) var currentFileName = "No audio file created"
     @Published private(set) var detectedTrack = "Waiting for a Song"
@@ -102,6 +103,14 @@ final class RecorderViewModel: ObservableObject {
         logEvents.removeAll()
     }
 
+    func setPanelVisible(_ visible: Bool) {
+        guard isPanelVisible != visible else { return }
+        isPanelVisible = visible
+        if visible {
+            Task { await refreshNowPlaying() }
+        }
+    }
+
     private func appendLog(_ level: LogLevel, _ message: String) {
         logEvents.insert(LogEvent(level: level, message: message), at: 0)
         if logEvents.count > 200 {
@@ -121,6 +130,7 @@ final class RecorderViewModel: ObservableObject {
     private var pendingStopNotice: String?
     private var isRefreshingNowPlaying = false
     private var lastNowPlayingRefresh = Date.distantPast
+    private var nowPlayingTrackID: String?
 
     init(
         engine: any AudioCaptureControlling = AudioCaptureEngine(),
@@ -344,6 +354,7 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func updateElapsed() {
+        guard isPanelVisible else { return }
         if isRecording, let startedAt {
             elapsed = Date().timeIntervalSince(startedAt)
         } else if Date().timeIntervalSince(lastNowPlayingRefresh) > 3 {
@@ -352,17 +363,27 @@ final class RecorderViewModel: ObservableObject {
     }
 
     func refreshNowPlaying() async {
-        guard !isRecording, !isBusy, !isRefreshingNowPlaying else { return }
+        guard isPanelVisible, !isRecording, !isBusy, !isRefreshingNowPlaying else { return }
         isRefreshingNowPlaying = true
         lastNowPlayingRefresh = Date()
         defer { isRefreshingNowPlaying = false }
 
         do {
-            let snapshot = try await musicAutomation.snapshot(includeArtwork: true)
+            let snapshot = try await musicAutomation.snapshot()
             guard !isRecording else { return }
-            currentTrack = snapshot.track
-            detectedTrack = snapshot.track?.displayText ?? "Waiting for a Song"
-            detectedArtworkData = snapshot.track?.artworkData
+            let trackChanged = nowPlayingTrackID != snapshot.trackID
+            var resolvedSnapshot = snapshot
+            if trackChanged, snapshot.track != nil,
+               let artworkSnapshot = try? await musicAutomation.snapshot(includeArtwork: true),
+               artworkSnapshot.trackID == snapshot.trackID {
+                resolvedSnapshot = snapshot.withArtwork(artworkSnapshot.track?.artworkData)
+            }
+            nowPlayingTrackID = snapshot.trackID
+            currentTrack = resolvedSnapshot.track
+            detectedTrack = resolvedSnapshot.track?.displayText ?? "Waiting for a Song"
+            if trackChanged {
+                detectedArtworkData = resolvedSnapshot.track?.artworkData
+            }
             detectedPosition = snapshot.position
             detectedDuration = snapshot.duration
         } catch {
@@ -509,6 +530,7 @@ final class RecorderViewModel: ObservableObject {
         var enrichedTracks: [String: TrackMetadata] = [:]
 
         while !Task.isCancelled && isRecording {
+            var pollInterval: UInt64 = 200_000_000
             do {
                 var snapshot = try await musicAutomation.snapshot()
                 guard !Task.isCancelled, isRecording else { return }
@@ -613,6 +635,7 @@ final class RecorderViewModel: ObservableObject {
                     currentFileName = session.currentFileName
                     status = session.status
                 }
+                pollInterval = RecordingPollPolicy.nanoseconds(for: snapshot, phase: session.phase)
             } catch let error as MusicAutomationError {
                 if case .automationPermission = error {
                     appendLog(.error, error.localizedDescription)
@@ -625,7 +648,7 @@ final class RecorderViewModel: ObservableObject {
                 status = "Could not read the track; retrying…"
             }
 
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try? await Task.sleep(nanoseconds: pollInterval)
         }
     }
 
@@ -658,6 +681,7 @@ final class RecorderViewModel: ObservableObject {
         elapsed = 0
         hasUnfinishedFile = false
         currentTrack = nil
+        nowPlayingTrackID = nil
         detectedTrack = "Waiting for a Song"
         detectedArtworkData = nil
         detectedPosition = 0

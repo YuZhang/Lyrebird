@@ -5,30 +5,34 @@ actor MusicLibrary {
     private var songKeys: Set<String> = []
     private var unidentifiedFileNames: Set<String> = []
     private var observedFiles: Set<URL> = []
+    private var songKeysByFile: [URL: String] = [:]
+    private var unidentifiedNamesByFile: [URL: String] = [:]
 
     func prepare(in directory: URL) {
-        songKeys.removeAll()
-        unidentifiedFileNames.removeAll()
-
         let files = Self.audioFiles(in: directory)
         observedFiles = Set(files)
+        songKeysByFile.removeAll()
+        unidentifiedNamesByFile.removeAll()
 
         for url in files {
-            let asset = AVAsset(url: url)
-            let metadata = asset.commonMetadata
-            if let title = Self.value(for: .commonKeyTitle, in: metadata), !title.isEmpty {
-                let artist = Self.value(for: .commonKeyArtist, in: metadata) ?? ""
-                let album = Self.value(for: .commonKeyAlbumName, in: metadata) ?? ""
-                songKeys.insert(Self.key(title: title, artist: artist, album: album))
-            } else {
-                unidentifiedFileNames.insert(Self.normalize(url.deletingPathExtension().lastPathComponent))
-            }
+            indexFile(at: url)
         }
+        rebuildIndexes()
     }
 
     func refreshIfNeeded(in directory: URL) {
-        guard Set(Self.audioFiles(in: directory)) != observedFiles else { return }
-        prepare(in: directory)
+        let currentFiles = Set(Self.audioFiles(in: directory))
+        guard currentFiles != observedFiles else { return }
+
+        for url in observedFiles.subtracting(currentFiles) {
+            songKeysByFile.removeValue(forKey: url)
+            unidentifiedNamesByFile.removeValue(forKey: url)
+        }
+        for url in currentFiles.subtracting(observedFiles) {
+            indexFile(at: url)
+        }
+        observedFiles = currentFiles
+        rebuildIndexes()
     }
 
     func contains(_ track: TrackMetadata) -> Bool {
@@ -45,7 +49,27 @@ actor MusicLibrary {
 
     func register(_ track: TrackMetadata, at url: URL) {
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        songKeys.insert(Self.key(title: track.title, artist: track.artist, album: track.album))
+        observedFiles.insert(url)
+        unidentifiedNamesByFile.removeValue(forKey: url)
+        songKeysByFile[url] = Self.key(title: track.title, artist: track.artist, album: track.album)
+        rebuildIndexes()
+    }
+
+    private func indexFile(at url: URL) {
+        let asset = AVAsset(url: url)
+        let metadata = asset.commonMetadata
+        if let title = Self.value(for: .commonKeyTitle, in: metadata), !title.isEmpty {
+            let artist = Self.value(for: .commonKeyArtist, in: metadata) ?? ""
+            let album = Self.value(for: .commonKeyAlbumName, in: metadata) ?? ""
+            songKeysByFile[url] = Self.key(title: title, artist: artist, album: album)
+        } else {
+            unidentifiedNamesByFile[url] = Self.normalize(url.deletingPathExtension().lastPathComponent)
+        }
+    }
+
+    private func rebuildIndexes() {
+        songKeys = Set(songKeysByFile.values)
+        unidentifiedFileNames = Set(unidentifiedNamesByFile.values)
     }
 
     private static func audioFiles(in directory: URL) -> [URL] {

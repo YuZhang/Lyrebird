@@ -12,9 +12,8 @@ struct ContentView: View {
         .padding(10)
         .frame(width: 320, height: 132)
         .background(LyrebirdTheme.canvas)
-        .onAppear {
-            Task { await model.refreshNowPlaying() }
-        }
+        .onAppear { model.setPanelVisible(true) }
+        .onDisappear { model.setPanelVisible(false) }
         .onReceive(timer) { _ in model.updateElapsed() }
         .alert("Recording Notice", isPresented: errorIsPresented) {
             if let action = model.errorAction {
@@ -52,7 +51,8 @@ struct ContentView: View {
                             fontSize: 16,
                             weight: .semibold,
                             color: .primary,
-                            height: 16
+                            height: 16,
+                            isActive: model.isPanelVisible
                         )
                         MarqueeText(
                             text: model.currentTrack?.artistAndAlbumText ?? " ",
@@ -60,7 +60,8 @@ struct ContentView: View {
                             fontSize: 11,
                             weight: .regular,
                             color: .secondary,
-                            height: 12
+                            height: 12,
+                            isActive: model.isPanelVisible
                         )
                     } else {
                         TextField(model.isRecording ? "Next Track Name" : model.currentFileName, text: $model.trackTitle)
@@ -227,6 +228,7 @@ struct ContentView: View {
                 }
             }
             .frame(width: 34, height: 34)
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(model.isBusy && !model.isRecording)
